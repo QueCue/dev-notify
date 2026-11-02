@@ -1,0 +1,33 @@
+{
+  "name": "dev-notify",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "跨平台开发任务通知工具，支持 Telegram 与飞书",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "dev-notify": "dist/cli.js"
+  },
+  "files": [
+    "dist/*.js",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test-js/*.test.mjs",
+    "start": "node dist/cli.js",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "2.1.2"
+  }
+}
