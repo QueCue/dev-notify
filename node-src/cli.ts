@@ -15,7 +15,7 @@ import { accessReplies, configureReplies, disableReplies } from './reply-state.j
 import { startBridge, stopBridge, bridgeStatus, runBridge } from './reply-bridge.js';
 import type { ReplyHookOptions } from './reply-hooks.js';
 
-const HELP = `dev-notify 0.1.0-alpha.3 — 跨平台开发任务通知
+const HELP = `dev-notify 0.1.0 — 跨平台开发任务通知
 
 命令：
   send --title 标题 [--content 正文 | --content-file 文件 | --stdin]
@@ -81,7 +81,7 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
     } catch { throw new ConfigError('参数无效，请运行 --help 查看用法。'); }
     const { values, positionals } = parsed;
     if (values.help) { context.out(HELP); return 0; }
-    if (values.version) { context.out('dev-notify 0.1.0-alpha.3'); return 0; }
+    if (values.version) { context.out('dev-notify 0.1.0'); return 0; }
     const [command, action, integrationAction] = positionals;
     const allowed: Record<string, string[]> = {
       send: ['title', 'content', 'content-file', 'stdin', 'channel', 'level', 'footer', 'dry-run'],

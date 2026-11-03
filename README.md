@@ -2,16 +2,16 @@
 
 跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code、Unity 或项目目录。
 
-**npm 包名为 `@quecue/dev-notify`。`0.1.0-alpha.3` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
+**npm 包名为 `@quecue/dev-notify`。`0.1.0` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
 
 ## 安装与使用
 
 要求 Node.js 22 或以上，首发目标 Windows、macOS。运行时依赖锁定版本的 `@napi-rs/keyring`，由 npm 安装对应系统的预编译原生组件，不需要额外的语言工具链或编译器。请保留 npm 的 optional 依赖。
 
-从 npm 安装当前已发布的 Alpha：
+从 npm 安装：
 
 ```sh
-npm install -g @quecue/dev-notify@alpha
+npm install -g @quecue/dev-notify
 dev-notify --version
 dev-notify setup
 ```
