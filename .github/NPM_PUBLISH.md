@@ -1,5 +1,7 @@
 # npm 自动发布
 
+简体中文 | [English](NPM_PUBLISH.en.md)
+
 工作流：`.github/workflows/publish-npm.yml`，GitHub Actions 页面显示为 **Publish npm**。
 
 使用 npm Trusted Publishing（OIDC），不配置 `NPM_TOKEN`、`NODE_AUTH_TOKEN`、密码或 OTP secret。工作流由 GitHub 托管 runner 执行，固定 Node.js 24 与 npm 11.21.0；只有发布任务有 `id-token: write`，测试任务没有该权限。

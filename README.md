@@ -1,5 +1,7 @@
 # dev-notify
 
+简体中文 | [English](README.en.md)
+
 跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code、Unity 或项目目录。
 
 **npm 包名为 `@quecue/dev-notify`。`0.1.3` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。

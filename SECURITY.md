@@ -1,5 +1,7 @@
 # 安全边界（Node/npm）
 
+简体中文 | [English](SECURITY.en.md)
+
 当前源码为 `0.1.3`，npm 包名为 `@quecue/dev-notify`；发布版本以 npm registry 为准，源码更新不等同于已发布。本项目尚未完成安全审计或双平台实机验收。
 
 ## 凭据与权限
