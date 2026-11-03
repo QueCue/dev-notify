@@ -163,12 +163,15 @@ jobs:
             if (result.error) throw result.error;
             return result;
           }
+          function queryRegistry(args) {
+            return npm(['view', ...args, '--json', '--prefer-online'], true);
+          }
           function readRegistry(args) {
-            const result = npm([...args, '--json'], true);
+            const result = queryRegistry(args);
             if (result.status !== 0) throw new Error('npm 查询失败；不猜测发布或标签状态，请检查任务日志。');
             return JSON.parse(result.stdout);
           }
-          const existing = npm(['view', spec, 'dist.integrity', '--json'], true);
+          const existing = queryRegistry([spec, 'dist.integrity']);
           if (existing.status === 0) {
             if (JSON.parse(existing.stdout) !== integrity) throw new Error('此版本已存在且内容不同；不能覆盖 npm 版本，请使用新版本号。');
             console.log('相同内容的版本已发布，跳过重复发布，继续核验标签。');
@@ -180,20 +183,30 @@ jobs:
               throw new Error('发布失败或结果未知；请核对 npm Trusted Publisher 的直接发布权限。不会自动重发。');
             }
           }
-          let confirmed = false;
-          for (let attempt = 0; attempt < 6; attempt++) {
-            const result = npm(['view', spec, 'dist.integrity', '--json'], true);
-            if (result.status === 0 && JSON.parse(result.stdout) === integrity) { confirmed = true; break; }
-            if (attempt < 5) await delay(5000);
+          let confirmed = existing.status === 0;
+          const deadline = Date.now() + 180000;
+          for (let attempt = 1; !confirmed && Date.now() < deadline; attempt++) {
+            const result = queryRegistry([spec, 'dist.integrity']);
+            if (result.status === 0) {
+              if (JSON.parse(result.stdout) !== integrity) throw new Error('远端版本已可见，但完整性与本次包不同，停止标签更新。');
+              confirmed = true; break;
+            }
+            console.log(`npm 已接受发布，等待 registry 可见（第 ${attempt} 次只读核验）；不会重复发布。`);
+            if (Date.now() < deadline) await delay(Math.min(10000, deadline - Date.now()));
           }
-          if (!confirmed) throw new Error('尚未确认远端压缩包完整性；不重发，请稍后核验。');
+          if (!confirmed) throw new Error('npm 已接受发布，但 3 分钟内未确认远端完整性；标签更新尚未执行。请稍后重跑任务核验，不要重新发版。');
           const wanted = [...new Set([tag, ...(process.env.UPDATE_LATEST === 'true' ? ['latest'] : [])])];
           for (const wantedTag of wanted) {
-            if (readRegistry(['view', name, 'dist-tags'])[wantedTag] !== version) {
+            if (readRegistry([name, 'dist-tags'])[wantedTag] !== version) {
               if (npm(['dist-tag', 'add', spec, wantedTag]).status !== 0) throw new Error('版本可能已发布，但标签更新失败；请检查 Allow npm dist-tag 权限。');
             }
           }
-          const tags = readRegistry(['view', name, 'dist-tags']);
-          if (wanted.some(t => tags[t] !== version)) throw new Error('远端标签核验未通过。');
+          let tags = readRegistry([name, 'dist-tags']);
+          const tagDeadline = Date.now() + 60000;
+          while (wanted.some(t => tags[t] !== version) && Date.now() < tagDeadline) {
+            await delay(5000);
+            tags = readRegistry([name, 'dist-tags']);
+          }
+          if (wanted.some(t => tags[t] !== version)) throw new Error('版本已发布，但远端标签暂未核验通过；请稍后重跑核验，不要重新发版。');
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## npm 发布完成\n\n- 版本：\`${spec}\`\n- 标签：${wanted.join(', ')}\n- 远端 SHA-512 完整性核验通过。\n`);
           NODE
