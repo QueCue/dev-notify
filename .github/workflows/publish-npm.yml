@@ -66,8 +66,8 @@ jobs:
           }
           const ref = `refs/tags/${process.env.RELEASE_TAG}`;
           execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], { stdio: 'pipe' });
-          // 手动首次发布允许增加 CI 配置，但发布源码必须与既有标签一致；不删除或重打标签。
-          execFileSync('git', ['diff', '--exit-code', ref, 'HEAD', '--', '.', ':!.github'], { stdio: 'inherit' });
+          // 允许修正不进入 npm 包的 CI/测试；发布源码仍须与既有标签一致，不删除或重打标签。
+          execFileSync('git', ['diff', '--exit-code', ref, 'HEAD', '--', '.', ':!.github', ':!test-js'], { stdio: 'inherit' });
           const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
           if (head !== process.env.GITHUB_SHA) throw new Error('构建源码与工作流运行提交不一致，拒绝生成错误的来源证明。');
           appendFileSync(process.env.GITHUB_OUTPUT, `version=${pkg.version}\ndist_tag=${match[4] || 'latest'}\n`);

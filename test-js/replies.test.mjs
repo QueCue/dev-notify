@@ -665,7 +665,8 @@ test('macOS 进程身份必须是前台 claude，Windows 进程名称/生日必�
 test('会话元数据精确查找、重复 ID/进程出生变化一律拒绝', async t => {
   const ctx = await temp(t), directory = path.join(ctx.env.CLAUDE_CONFIG_DIR, 'sessions'); await mkdir(directory, { recursive: true });
   await atomicJson(path.join(directory, '12345.json'), { sessionId: TARGET.session, pid: TARGET.pid, cwd: 'C:\\test', name: '测试' });
-  const options = { env: ctx.env, runner: async () => ({ code: 0, stdout: JSON.stringify({ birth: TARGET.birth }) }) };
+  const options = { env: ctx.env, platform: 'win32', runner: async () => ({ code: 0, stdout: JSON.stringify({ birth: TARGET.birth }) }) };
+  assert.equal(await findSession(TARGET.session, { ...options, platform: 'linux' }), null);
   const found = await findSession(TARGET.session, options); assert.equal(found.pid, TARGET.pid);
   assert.equal(await validateTarget({ ...found, birth: 'OLD' }, options), false);
   await atomicJson(path.join(directory, '12346.json'), { sessionId: TARGET.session, pid: 12346 });
