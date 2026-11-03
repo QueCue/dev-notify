@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { ConfigError, decodeUtf8, type Env } from './config.js';
+import { t } from './i18n.js';
 import type { Prompts } from './prompts.js';
 
 export const HOOK_MARKER = 'dev-notify:claude-code:v1';
@@ -36,7 +37,7 @@ const yes = (value: string) => /^(y|yes)$/i.test(value.trim());
 export function claudeSettingsPath(env: Env = process.env, home = homedir(), platform = process.platform): string {
   const join = platform === 'win32' ? path.win32 : path.posix;
   const root = env.CLAUDE_CONFIG_DIR || join.join(home, '.claude');
-  if (!join.isAbsolute(root)) throw new ConfigError('CLAUDE_CONFIG_DIR 需要是绝对路径，Claude Code 设置没有改动');
+  if (!join.isAbsolute(root)) throw new ConfigError(t('claude.settingsAbsolute'));
   return join.join(root, 'settings.json');
 }
 function settingsFile(options: IntegrationOptions): string {
@@ -45,24 +46,24 @@ function settingsFile(options: IntegrationOptions): string {
 async function snapshot(file: string): Promise<Buffer | null> {
   try {
     const bytes = await readFile(file);
-    if (bytes.length > 1024 * 1024) throw new ConfigError('Claude Code 设置超过 1 MiB，操作已停止，文件没有改动。');
+    if (bytes.length > 1024 * 1024) throw new ConfigError(t('claude.settingsTooLarge'));
     return bytes;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     if (error instanceof ConfigError) throw error;
-    throw new ConfigError('无法读取 Claude Code 设置，操作已停止。');
+    throw new ConfigError(t('claude.settingsReadFailed'));
   }
 }
 function parseSettings(before: Buffer | null): Settings {
   let data: unknown;
   try { data = before === null ? {} : JSON.parse(decodeUtf8(before)); }
-  catch { throw new ConfigError('Claude Code 设置不是合法的 UTF-8 JSON，没有覆盖。'); }
-  if (!record(data) || (data.hooks !== undefined && !record(data.hooks))) throw new ConfigError('Claude Code 设置或 hooks 结构无效，没有覆盖。');
+  catch { throw new ConfigError(t('claude.settingsInvalidJson')); }
+  if (!record(data) || (data.hooks !== undefined && !record(data.hooks))) throw new ConfigError(t('claude.settingsInvalidShape'));
   for (const event of EVENTS) {
     const groups = data.hooks?.[event];
     if (groups === undefined) continue;
     if (!Array.isArray(groups) || groups.some(group => !record(group) || !Array.isArray(group.hooks)
-      || group.hooks.some((hook: unknown) => !record(hook)))) throw new ConfigError('Claude Code hook 数组结构无效，没有覆盖。');
+      || group.hooks.some((hook: unknown) => !record(hook)))) throw new ConfigError(t('claude.hooksInvalidShape'));
   }
   return data;
 }
@@ -138,20 +139,20 @@ async function commit(file: string, before: Buffer | null, target: Settings, pro
   const lockFile = file + '.dev-notify.lock';
   let lock;
   try { lock = await open(lockFile, 'wx', 0o600); }
-  catch { throw new ConfigError('暂时无法获取 Claude Code 设置写入锁。请确认没有安装进程在运行，再处理残留的 .dev-notify.lock。'); }
+  catch { throw new ConfigError(t('claude.lockUnavailable')); }
   const temporary = path.join(path.dirname(file), `.dev-notify-${randomBytes(16).toString('hex')}.tmp`);
   let created = false;
   try {
     await lock.close();
-    if (!same(before, await snapshot(file))) throw new ConfigError('Claude Code 设置在确认期间发生了变化，没有覆盖，请重试。');
+    if (!same(before, await snapshot(file))) throw new ConfigError(t('claude.changedDuringConfirm'));
     const stream = await open(temporary, 'wx', 0o600); created = true;
     try { await stream.writeFile(JSON.stringify(target, null, 2) + '\n', 'utf8'); await stream.sync(); }
     finally { await stream.close(); }
-    if (!same(before, await snapshot(file))) throw new ConfigError('Claude Code 设置在保存期间发生了变化，没有覆盖，请重试。');
+    if (!same(before, await snapshot(file))) throw new ConfigError(t('claude.changedDuringSave'));
     await replace(temporary, file);
   } finally {
-    if (created) { try { await remove(temporary); } catch { prompts.out('临时文件清理失败。安装结束后请删除 .dev-notify-*.tmp。'); } }
-    try { await remove(lockFile); } catch { prompts.out('锁文件清理失败。安装结束后请删除 .dev-notify.lock。'); }
+    if (created) { try { await remove(temporary); } catch { prompts.out(t('claude.tempCleanupFailed')); } }
+    try { await remove(lockFile); } catch { prompts.out(t('claude.lockCleanupFailed')); }
   }
 }
 export async function configureClaudeCode(config: string, action: 'install' | 'remove', prompts: Prompts,
@@ -159,38 +160,37 @@ export async function configureClaudeCode(config: string, action: 'install' | 'r
   const file = settingsFile(options), before = await snapshot(file), data = parseSettings(before);
   const status = describe(file, data);
   if (action === 'remove' && status.stop + status.notification + status.lifecycle + status.interaction === 0) {
-    prompts.out(`Claude Code 用户级设置：${file}`);
-    prompts.out('没有找到本工具添加的 hooks，设置没有改动。');
+    prompts.out(t('claude.settingsPath', { file }));
+    prompts.out(t('claude.noHooks'));
     return true;
   }
   const runtime = options.runtime ?? { node: process.execPath, cli: fileURLToPath(new URL('./cli.js', import.meta.url)) };
   const target = merged(data, action === 'install' ? path.resolve(config) : null, runtime);
   // setup 快速路径已在汇总确认前展示路径和发送范围，避免保存后重复整段说明。
   const quiet = options.confirm === false;
-  if (!quiet) prompts.out(`Claude Code 用户级设置：${file}`);
+  if (!quiet) prompts.out(t('claude.settingsPath', { file }));
   if (JSON.stringify(data) === JSON.stringify(target)) {
-    prompts.out(action === 'install' ? '本工具 hooks 已经安装，配置一致，无需重复添加。' : '没有找到本工具添加的 hooks，设置没有改动。');
+    prompts.out(action === 'install' ? t('claude.alreadyInstalled') : t('claude.noHooks'));
     return true;
   }
   if (action === 'install') {
     if (!quiet) {
-      prompts.out(`通知配置：${path.resolve(config)}`);
-      prompts.out('会为这个 Claude Code 配置目录下的所有项目启用通知：任务结束时发送最终回复，需要你确认或输入时也会提醒。');
-      prompts.out('最终回复和提醒正文可能包含敏感内容，会发送到配置实际生效的 Telegram / 飞书。环境变量仍然优先。');
-      prompts.out('同时安装会话生命周期和结构化问题 hooks。远程输入需要另行运行 reply setup 授权。');
-      prompts.out('不会读取整份会话记录。启用回复后，会读取会话的进程元数据；结构化问题或权限请求会发送对应的问题和工具信息。');
-      prompts.out('PreToolUse 只登记调用身份；PermissionRequest 会和本机终端窗口同时等待，远程回答的有效期是 10 分钟。安装完成事件只用于反馈结果，不会代替你作答。已核对 Claude Code 2.1.316；其他版本或宿主环境需要另行验证。');
+      prompts.out(t('claude.configPath', { config: path.resolve(config) }));
+      prompts.out(t('claude.installScope'));
+      prompts.out(t('claude.installSensitive'));
+      prompts.out(t('claude.installLifecycle'));
+      prompts.out(t('claude.installReads'));
+      prompts.out(t('claude.installTiming'));
     }
-    if (status.others) prompts.out(`当前文件里还有 ${status.others} 个其他相关处理器，可能会重复通知。`);
-    prompts.out('项目级或插件的 hooks 也可能同时生效；本工具不会自动迁移或删除旧版 hooks。');
-    if (status.disabled) prompts.out('注意：该文件启用了 disableAllHooks，安装后 hooks 也不会生效；请自行解除禁用。');
-  } else if (!quiet) prompts.out('只会移除本工具添加的通知、生命周期和交互处理器；其他设置、hooks、通知配置和系统凭据都会保留。如需停止回复桥接，请运行 reply disable 或 reply stop。');
+    if (status.others) prompts.out(t('claude.otherHandlers', { count: status.others }));
+    prompts.out(t('claude.projectHooks'));
+    if (status.disabled) prompts.out(t('claude.disabledWarning'));
+  } else if (!quiet) prompts.out(t('claude.removeScope'));
   if (options.confirm !== false
-    && !yes(await prompts.text(action === 'install' ? '安装这些 Claude Code hooks？[y/N] ' : '移除本工具的 Claude Code hooks？[y/N] '))) {
-    prompts.out('已取消，Claude Code 设置没有改动。'); return false;
+    && !yes(await prompts.text(action === 'install' ? t('claude.confirmInstall') : t('claude.confirmRemove')))) {
+    prompts.out(t('claude.cancelled')); return false;
   }
   await commit(file, before, target, prompts, options.replace);
-  prompts.out(action === 'install' ? 'Claude Code hooks 已安装。请在 /hooks 中检查并按界面确认；如果没有生效，请重启会话。'
-    : '本工具的 Claude Code hooks 已移除。请在 /hooks 中检查，必要时重启会话。');
+  prompts.out(action === 'install' ? t('claude.installed') : t('claude.removed'));
   return true;
 }

@@ -1,14 +1,15 @@
 import { requestJson, type Request } from './channels.js';
 import { ConfigError } from './config.js';
+import { t } from './i18n.js';
 
 export type TelegramApi = (method: string, payload: Record<string, unknown>) => Promise<any>;
 export function telegramApi(token: string, request: Request = requestJson): TelegramApi {
   return async (method, payload) => {
-    if (!['sendMessage', 'editMessageReplyMarkup', 'answerCallbackQuery', 'getMe', 'getUpdates', 'getWebhookInfo'].includes(method)) throw new ConfigError('不支持的 Telegram 桥接方法');
+    if (!['sendMessage', 'editMessageReplyMarkup', 'answerCallbackQuery', 'getMe', 'getUpdates', 'getWebhookInfo'].includes(method)) throw new ConfigError(t('reply.telegramMethod'));
     const response = await request(`https://api.telegram.org/bot${token}/${method}`, payload);
     if (response.ok !== true) {
-      if (response.error_code === 409) throw new ConfigError('Telegram 轮询冲突；检查旧版桥接、其他机器或 webhook，桥接不会抢占或删除 webhook');
-      throw new ConfigError('Telegram 桥接请求失败；不输出服务端正文或秘密');
+      if (response.error_code === 409) throw new ConfigError(t('reply.telegramConflict'));
+      throw new ConfigError(t('reply.telegramRequestFailed'));
     }
     return response.result;
   };

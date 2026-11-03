@@ -200,10 +200,15 @@ The old prototype used `backend: "system"`, which on Windows is a DPAPI file and
 ```json
 {
   "version": 1,
+  "language": "zh",
   "telegram": {"enabled": true, "chat_ids": [], "token_env": "TELEGRAM_BOT_TOKEN"},
   "feishu": {"enabled": true, "webhook_env": "FEISHU_WEBHOOK", "secret_env": "FEISHU_SECRET"}
 }
 ```
+
+### Interface language
+
+`--lang zh|en` switches the interface language for a single command, and `DEV_NOTIFY_LANG=zh|en` sets it for the current environment; the persistent setting is stored in the `language` field of the configuration (`zh` or `en`). Precedence is `--lang` > `DEV_NOTIFY_LANG` > configuration > default `zh`. Run `dev-notify language` to view the effective language, and `dev-notify language zh|en` to save a change. CLI output, error messages, notification content, interaction buttons, and reply bridge messages all use the selected language; `setup` saves the current language when creating a new configuration.
 
 ### Credentials and recipients
 

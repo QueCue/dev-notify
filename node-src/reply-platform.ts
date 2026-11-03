@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { ConfigError, type Env } from './config.js';
+import { t } from './i18n.js';
 import { claudeSettingsPath } from './claude-code.js';
 import type { SessionTarget } from './reply-state.js';
 
@@ -11,8 +12,8 @@ export type Runner = (command: string, args: string[], input?: string) => Promis
 export const runCommand: Runner = (command, args, input = '') => new Promise((resolve, reject) => {
   const child = spawn(command, args, { windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', overflow = false;
-  const timer = setTimeout(() => { child.kill(); reject(new ConfigError('系统会话操作超时。输入可能已经部分送达，为避免重复提交，不会自动重试。')); }, 15000);
-  const fail = () => { clearTimeout(timer); reject(new ConfigError('系统会话操作失败。为了避免泄露命令或输入，这里不显示底层信息。')); };
+  const timer = setTimeout(() => { child.kill(); reject(new ConfigError(t('reply.platformTimeout'))); }, 15000);
+  const fail = () => { clearTimeout(timer); reject(new ConfigError(t('reply.platformFailed'))); };
   child.on('error', fail); child.stdin.on('error', () => {});
   child.stdout.on('data', data => { if (stdout.length + data.length > 1024 * 1024) { overflow = true; child.kill(); } else stdout += data.toString('utf8'); });
   child.stderr.resume();
@@ -25,10 +26,10 @@ function powershell(script: string, input: unknown, runner: Runner): Promise<Com
 }
 const READ_PROCESS = `$ErrorActionPreference='Stop'; [Console]::InputEncoding=[Text.UTF8Encoding]::new($false); $x=[Console]::In.ReadToEnd()|ConvertFrom-Json; $p=Get-Process -Id $x.pid; if($p.ProcessName -ne 'claude'){exit 3}; @{birth=$p.StartTime.ToUniversalTime().Ticks.ToString()}|ConvertTo-Json -Compress`;
 export function sanitizeReply(text: string): string {
-  if (typeof text !== 'string' || !text.trim()) throw new ConfigError('回复内容不能为空。');
-  if (Array.from(text).length > 4000) throw new ConfigError('回复超过 4000 字符，没有提交。内容不会被截断，也不会拆成多次发送。');
+  if (typeof text !== 'string' || !text.trim()) throw new ConfigError(t('reply.emptyReply'));
+  if (Array.from(text).length > 4000) throw new ConfigError(t('reply.replyTooLong'));
   const value = text.replace(/\r\n|[\r\n\u2028\u2029]/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim();
-  if (!value) throw new ConfigError('回复清理后没有可提交的内容。');
+  if (!value) throw new ConfigError(t('reply.emptyAfterCleanup'));
   return value;
 }
 export async function processIdentity(pid: number, platform = process.platform, runner: Runner = runCommand): Promise<{ birth: string; tty: string } | null> {
@@ -134,13 +135,13 @@ public static class DevNotifyConsole {
 if([DevNotifyConsole]::Send([uint32]$x.pid,[string]$x.text)){exit 0}else{exit 4}`;
 export async function injectReply(target: SessionTarget, text: string, options: SessionOptions = {}): Promise<void> {
   const safe = sanitizeReply(text), runner = options.runner ?? runCommand, platform = options.platform ?? process.platform;
-  if (!await validateTarget(target, options)) throw new ConfigError('会话已经关闭、切换，或无法核验身份。请从最新通知回复。');
+  if (!await validateTarget(target, options)) throw new ConfigError(t('reply.targetInvalid'));
   if (platform === 'win32') {
     const result = await powershell(WINDOWS_INJECT, { pid: target.pid, birth: target.birth, text: safe }, runner);
-    if (result.code !== 0) throw new ConfigError('Windows 控制台注入失败，可能只写入了一部分。不会自动重试，请检查终端。');
+    if (result.code !== 0) throw new ConfigError(t('reply.windowsPartial'));
     return;
   }
-  if (platform !== 'darwin') throw new ConfigError('远程回复仅支持 Windows 和 macOS。');
+  if (platform !== 'darwin') throw new ConfigError(t('reply.unsupportedPlatform'));
   // 先确定 tmux pane，字面文本通过 stdin 缓冲区传入，绝不作为 shell 或按键名称执行。
   let listing: CommandResult | null = null;
   try { listing = await runner('tmux', ['list-panes', '-a', '-F', '#{pane_id} #{pane_tty}']); } catch { /* Ghostty 回退仅在尚未发送任何输入时使用。 */ }
@@ -148,11 +149,11 @@ export async function injectReply(target: SessionTarget, text: string, options: 
   if (pane) {
     const name = 'dev-notify-' + target.pid + '-' + Date.now();
     const loaded = await runner('tmux', ['load-buffer', '-b', name, '-'], safe);
-    if (loaded.code !== 0) throw new ConfigError('tmux 输入缓冲区创建失败，这次回复没有提交。');
+    if (loaded.code !== 0) throw new ConfigError(t('reply.tmuxBufferFailed'));
     try {
-      if (!await validateTarget(target, options)) throw new ConfigError('会话已经变化，这次回复没有提交。');
-      if ((await runner('tmux', ['paste-buffer', '-d', '-b', name, '-t', pane])).code !== 0) throw new ConfigError('tmux 粘贴失败，可能只送达了一部分。不会自动重试。');
-      if ((await runner('tmux', ['send-keys', '-t', pane, 'Enter'])).code !== 0) throw new ConfigError('tmux 提交失败，文本可能已经输入。不会自动重试。');
+      if (!await validateTarget(target, options)) throw new ConfigError(t('reply.tmuxChanged'));
+      if ((await runner('tmux', ['paste-buffer', '-d', '-b', name, '-t', pane])).code !== 0) throw new ConfigError(t('reply.tmuxPasteFailed'));
+      if ((await runner('tmux', ['send-keys', '-t', pane, 'Enter'])).code !== 0) throw new ConfigError(t('reply.tmuxSubmitFailed'));
     } finally { await runner('tmux', ['delete-buffer', '-b', name]).catch(() => {}); }
     return;
   }
@@ -160,5 +161,5 @@ export async function injectReply(target: SessionTarget, text: string, options: 
   const action = 'text:' + safe.replace(/\\/g, '\\\\') + '\\x0d';
   const script = `tell application "Ghostty"\nrepeat with w in windows\nrepeat with t in terminals of w\nif tty of t is "${escape(target.tty)}" then\nperform action "${escape(action)}" on t\nreturn "ok"\nend if\nend repeat\nend repeat\nreturn "notfound"\nend tell`;
   const result = await runner('/usr/bin/osascript', ['-'], script);
-  if (result.code !== 0 || result.stdout.trim() !== 'ok') throw new ConfigError('Ghostty 没有找到目标窗口，或注入失败。不会改投其他窗口，也不会重复输入。');
+  if (result.code !== 0 || result.stdout.trim() !== 'ok') throw new ConfigError(t('reply.ghosttyFailed'));
 }

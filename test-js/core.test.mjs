@@ -256,3 +256,23 @@ test('可列出可选应用集成且非交互密钥向导不回显输入', async
   assert.match((await invoke(root, ['integration', 'list'])).text, /支持通知/);
   assert.match((await invoke(root, ['setup'])).text, /交互终端/);
 });
+test('界面语言支持 --lang、DEV_NOTIFY_LANG、配置项和 language 命令', async t => {
+  const root = await temporary(t);
+  const created = await invoke(root, ['--lang', 'en', 'setup', '--template', '--yes']);
+  assert.equal(created.code, 0);
+  assert.match(created.text, /Template created/);
+  assert.doesNotMatch(created.text, /模板已创建/);
+  let saved = JSON.parse(await readFile(path.join(root, 'config', 'config.json'), 'utf8'));
+  assert.equal(saved.language, 'en');
+  assert.match((await invoke(root, ['language'])).text, /Current language: English \(en\)/);
+  assert.match((await invoke(root, ['language'], { DEV_NOTIFY_LANG: 'zh' })).text, /当前语言：简体中文（zh）/);
+  assert.match((await invoke(root, ['language', 'zh'])).text, /语言已切换为简体中文/);
+  saved = JSON.parse(await readFile(path.join(root, 'config', 'config.json'), 'utf8'));
+  assert.equal(saved.language, 'zh');
+  const help = await invoke(root, ['--lang', 'en', '--help']);
+  assert.match(help.text, /Commands:/);
+  assert.doesNotMatch(help.text, /命令：/);
+  const invalid = await invoke(root, ['--lang', 'fr', 'language']);
+  assert.equal(invalid.code, 2);
+  assert.match(invalid.text, /zh 或 en/);
+});

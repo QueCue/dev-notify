@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { ConfigError, type Config, type Env } from './config.js';
+import { t } from './i18n.js';
 import { accessReplies, botKey, digest, stateTransaction, targetEpoch, type ReplyAccess, type SessionTarget } from './reply-state.js';
 import { findSession } from './reply-platform.js';
 import { textHash } from './reply-engine.js';
@@ -34,13 +35,13 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
     const previous = state.sessions[data.session_id];
     if (event === 'SessionEnd' || !target) {
       delete state.sessions[data.session_id]; delete state.pending[data.session_id];
-      endSessionInteractions(state, data.session_id, '会话已经结束，或无法核验身份');
+      endSessionInteractions(state, data.session_id, t('reply.endSessionReason'));
       return null;
     }
     // 同进程 / 同 TTY 已切换会话时，旧映射不再允许输入。
     for (const [id, other] of Object.entries(state.sessions)) {
       if (id !== target.session && (other.pid === target.pid || (target.tty && other.tty === target.tty))) {
-        endSessionInteractions(state, id, '会话已经切换');
+        endSessionInteractions(state, id, t('reply.endSwitchedReason'));
         delete state.sessions[id]; delete state.pending[id];
       }
     }
@@ -56,20 +57,20 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
     // 本地用户提交新任务时，尚未注入的排队回复不能抢在该任务前输入。
     if (event === 'UserPromptSubmit' && !match && pending?.phase === 'queued') delete state.pending[target.session];
     if (event === 'UserPromptSubmit' || event === 'SessionStart' || event === 'Stop') {
-      endSessionInteractions(state, target.session, event === 'Stop' ? '本轮已结束' : '本机已开始新任务或新会话');
+      endSessionInteractions(state, target.session, event === 'Stop' ? t('reply.endTurnReason') : t('reply.endLocalReason'));
     }
     return match ? pending : null;
   });
   if (receipt) {
-    await replyHint(apiFor(access, options), receipt.chat, '✅ Claude 已收到回复',
-      'Claude 已收到你提交的回复，任务完成后会再发通知。', receipt.message).catch(() => options.err?.('Telegram：收到确认没有发送成功；已提交的输入不会重放。'));
+    await replyHint(apiFor(access, options), receipt.chat, t('reply.receivedTitle'),
+      t('reply.receivedBody'), receipt.message).catch(() => options.err?.(t('reply.receivedTelegramFailed')));
     if (access.config.feishu.enabled && access.config.feishu.webhook) {
       try {
-        const result = await (options.send ?? deliver)(makePlan('feishu', { title: 'Claude 已收到回复', level: 'info',
-          content: 'Claude 已收到你提交的回复，任务完成后会再发通知。为减少扩散，这里不转发回复原文。',
-          footer: '会话：' + data.session_id }, access.config), access.config);
-        if (!result.ok) options.err?.('飞书：收到确认没有完整发送；已提交的输入不会重放。');
-      } catch { options.err?.('飞书：收到确认发送失败；已提交的输入不会重放。'); }
+        const result = await (options.send ?? deliver)(makePlan('feishu', { title: t('reply.receivedTitle'), level: 'info',
+          content: t('reply.receivedFeishuBody'),
+          footer: t('reply.receivedFeishuFooter', { session: data.session_id }) }, access.config), access.config);
+        if (!result.ok) options.err?.(t('reply.receivedFeishuIncomplete'));
+      } catch { options.err?.(t('reply.receivedFeishuFailed')); }
     }
   }
 }
@@ -103,9 +104,9 @@ export async function attachReply(message: Message, data: any, file: string, opt
   if (!saved || saved.working || !saved.tracked || targetEpoch(saved) !== targetEpoch(target)) return null;
   const ready = options.bridge ? await options.bridge(file, options.env ?? process.env)
     : (await bridgeStatus(file)).ready || await startBridge(file, options.env);
-  if (!ready) { options.err?.('回复桥接还没有就绪，这条通知不会显示回复按钮。可运行 reply status 查看原因。'); return null; }
+  if (!ready) { options.err?.(t('reply.bridgeNotReadyButton')); return null; }
   const api = apiFor(access, options), bot = await api('getMe', {});
-  if (typeof bot?.username !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(bot.username)) throw new ConfigError('Telegram Bot 用户名无效，回复按钮没有启用。');
+  if (typeof bot?.username !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(bot.username)) throw new ConfigError(t('reply.botUsernameInvalid'));
   const token = randomBytes(16).toString('hex');
   await stateTransaction(access, state => { state.entries['token:' + token] = { session: target.session, epoch: targetEpoch(target), updated: Date.now() }; });
   message.reply = { token, url: `https://t.me/${bot.username}?start=${token}`, users: access.policy.users };
@@ -115,7 +116,7 @@ export function mapReplies(plan: Plan, binding: { access: ReplyAccess; token: st
   if (plan.channel !== 'telegram') return;
   plan.onSent = async (item, response) => {
     if (!binding.access.policy.users.includes(item.recipient)) return;
-    if (!Number.isSafeInteger(response.result?.message_id)) throw new ConfigError('通知没有返回可关联的 Telegram 消息 ID。');
+    if (!Number.isSafeInteger(response.result?.message_id)) throw new ConfigError(t('reply.noMessageId'));
     await stateTransaction(binding.access, state => {
       const entry = state.entries['token:' + binding.token];
       if (entry) state.entries[`tg:${item.recipient}:${response.result.message_id}`] = entry;
@@ -136,17 +137,17 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
     ? await stateTransaction(access, state => state.sessions[data.session_id]) : null;
   // 登记阶段复用生命周期元数据；真正开启远程交互时仍重新核验进程身份。
   const target = cached ?? await getTarget(data, options);
-  if (!target) { options.err?.('没有核验到会话，结构化交互将在本机处理。'); return; }
+  if (!target) { options.err?.(t('reply.noSession')); return; }
   if (data.hook_event_name === 'PreToolUse') {
     // 只登记调用身份，不发网络请求、不等待远端，原生窗口可以正常出现。
     await registerToolCall(access, target, data); return;
   }
   if (!kind) return;
   const call = await stateTransaction(access, state => matchingCall(state, target, data));
-  if (!call) { options.err?.('没有唯一匹配到这次工具调用，远程交互没有启用；本机窗口不受影响。'); return; }
+  if (!call) { options.err?.(t('reply.noMatchingCall')); return; }
   const ready = options.bridge ? await options.bridge(file, options.env ?? process.env)
     : (await bridgeStatus(file)).ready || await startBridge(file, options.env);
-  if (!ready) { options.err?.('回复桥接还没有就绪，问题将在本机处理。'); return; }
+  if (!ready) { options.err?.(t('reply.bridgeNotReadyQuestion')); return; }
   const api = apiFor(access, options);
   const request = await createInteraction(access, target, kind, kind === 'question' ? data.tool_input : { tool_name: data.tool_name, tool_input: data.tool_input }, call);
   const controller = new AbortController();
@@ -157,8 +158,8 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
     if (access.config.feishu.enabled && access.config.feishu.webhook) {
       const bot = await api('getMe', {});
       if (typeof bot?.username === 'string' && /^[A-Za-z0-9_]{5,64}$/.test(bot.username)) {
-        const result = await (options.send ?? deliver)(makePlan('feishu', { title: 'Claude Code 需要你处理', level: 'warn', footer: '',
-          content: kind === 'question' ? questionsContent(request.questions) : '工具权限请求：' + data.tool_name,
+        const result = await (options.send ?? deliver)(makePlan('feishu', { title: t('hook.notificationTitle'), level: 'warn', footer: '',
+          content: kind === 'question' ? questionsContent(request.questions) : t('reply.permissionRequest', { tool: String(data.tool_name) }),
           reply: { token: request.id, url: `https://t.me/${bot.username}?start=${request.id}`, users: access.policy.users } }, access.config), access.config);
         if (result.ok) await stateTransaction(access, state => {
           const current = state.requests[request.id];
@@ -168,18 +169,18 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
     }
     const response = await (options.wait ?? waitInteraction)(access, request, () => accessReplies(file, options.env), { signal: controller.signal });
     if (response && !controller.signal.aborted) options.response?.(response);
-    else options.err?.('远程交互已经结束，或答案没有提交。不会自动作答，本机操作不受影响。');
+    else options.err?.(t('reply.interactionEnded'));
   } catch (error) {
     await stateTransaction(access, state => {
       const current = state.requests[request.id];
-      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', reason: 'failed', text: '远程交互处理失败，请在本机检查。' });
+      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', reason: 'failed', text: t('reply.interactionFailed') });
     }).catch(() => {});
     throw error;
   } finally {
     process.off('SIGTERM', cancel); process.off('SIGINT', cancel);
     if (controller.signal.aborted) await stateTransaction(access, state => {
       const current = state.requests[request.id];
-      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', reason: 'failed', text: '交互等待已取消，远程答案是否生效还没有确认。' });
+      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', reason: 'failed', text: t('reply.interactionCancelled') });
     }).catch(() => {});
   }
 }

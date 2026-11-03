@@ -200,10 +200,15 @@ Node 版使用 **Windows Credential Manager / macOS Keychain**，通过原生 No
 ```json
 {
   "version": 1,
+  "language": "zh",
   "telegram": {"enabled": true, "chat_ids": [], "token_env": "TELEGRAM_BOT_TOKEN"},
   "feishu": {"enabled": true, "webhook_env": "FEISHU_WEBHOOK", "secret_env": "FEISHU_SECRET"}
 }
 ```
+
+### 界面语言
+
+`--lang zh|en` 可临时切换单次命令的界面语言，`DEV_NOTIFY_LANG=zh|en` 可为当前环境设置语言；持久设置保存在配置的 `language` 字段（`zh` 或 `en`）。优先级为 `--lang` > `DEV_NOTIFY_LANG` > 配置 > 默认 `zh`。运行 `dev-notify language` 查看当前生效语言，`dev-notify language zh|en` 保存切换。CLI 输出、错误提示、通知内容、交互按钮和回复桥接消息都会使用所选语言；`setup` 创建新配置时会保存当前语言。
 
 ### 凭据与接收人
 

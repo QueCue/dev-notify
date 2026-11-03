@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { ConfigError } from './config.js';
+import { t } from './i18n.js';
 import { terminalPrompts, type Prompts } from './prompts.js';
 
 const NAME = '@quecue/dev-notify';
@@ -20,7 +21,7 @@ function npmRunner(args: string[], capture: boolean): UpdateRunnerResult {
     timeout: capture ? 30000 : 300000,
     shell: process.platform === 'win32',
   });
-  if (result.error) throw new ConfigError('无法运行 npm。请确认已安装 npm，并且它在 PATH 中。');
+  if (result.error) throw new ConfigError(t('update.npmUnavailable'));
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
@@ -33,18 +34,18 @@ async function fetchLatest(): Promise<string> {
       headers: { 'Cache-Control': 'no-cache, no-store', Accept: 'application/json' },
     });
   } catch {
-    throw new ConfigError('无法检查最新版本。请检查网络后重试。');
+    throw new ConfigError(t('update.checkNetwork'));
   }
-  if (!response.ok) throw new ConfigError(`无法检查最新版本（HTTP ${response.status}）。请检查网络后重试。`);
+  if (!response.ok) throw new ConfigError(t('update.checkHttp', { status: response.status }));
   let version: unknown;
-  try { version = (await response.json())?.version; } catch { throw new ConfigError('npm registry 返回的版本信息无法解析。'); }
-  if (typeof version !== 'string' || !VERSION.test(version)) throw new ConfigError('npm registry 返回的版本号格式不受支持。');
+  try { version = (await response.json())?.version; } catch { throw new ConfigError(t('update.parseRegistry')); }
+  if (typeof version !== 'string' || !VERSION.test(version)) throw new ConfigError(t('update.registryVersion'));
   return version;
 }
 
 function parts(version: string): number[] {
   const match = VERSION.exec(version);
-  if (!match) throw new ConfigError('版本号格式不受支持。');
+  if (!match) throw new ConfigError(t('update.versionFormat'));
   const rank = match[4] === 'alpha' ? 1 : match[4] === 'beta' ? 2 : match[4] === 'rc' ? 3 : 4;
   return [Number(match[1]), Number(match[2]), Number(match[3]), rank, Number(match[5] ?? 0)];
 }
@@ -68,46 +69,46 @@ export interface UpdateOptions {
 async function confirmUpdate(latest: string, options: UpdateOptions): Promise<boolean> {
   if (options.yes) return true;
   if (!options.prompts && (!process.stdin.isTTY || !process.stdout.isTTY)) {
-    throw new ConfigError('更新需要在交互终端中确认；非交互场景请使用 dev-notify update --yes。');
+    throw new ConfigError(t('update.terminalRequired'));
   }
   const prompts = options.prompts ?? terminalPrompts();
-  return /^(y|yes)$/i.test(await prompts.text(`更新到 ${latest}？[y/N] `));
+  return /^(y|yes)$/i.test(await prompts.text(t('update.confirm', { latest })));
 }
 
 async function runMaintenance(options: UpdateOptions, updated: boolean): Promise<number> {
   if (!options.post) {
-    if (updated) options.out('如有 Claude Code hooks，请运行 dev-notify integration claude-code install；如使用远程回复，请重启桥接。');
+    if (updated) options.out(t('update.manualPost'));
     return 0;
   }
   const code = await options.post();
   if (code !== 0) {
-    options.out(updated ? '更新已完成，但后续维护步骤没有全部成功；请按上面的提示检查。' : '维护步骤没有全部成功；请按上面的提示检查。');
+    options.out(t(updated ? 'update.partialUpdated' : 'update.partial'));
     return code;
   }
-  options.out(updated ? '更新后的维护步骤已完成。' : '维护步骤已完成。');
+  options.out(t(updated ? 'update.postDoneUpdated' : 'update.postDone'));
   return 0;
 }
 
 export async function updatePackage(current: string, options: UpdateOptions): Promise<number> {
-  if (!VERSION.test(current)) throw new ConfigError('当前版本号格式不受支持，无法检查更新。');
+  if (!VERSION.test(current)) throw new ConfigError(t('update.currentFormat'));
   const latest = await (options.latest ?? fetchLatest)();
-  if (!VERSION.test(latest)) throw new ConfigError('npm registry 返回的版本号格式不受支持。');
+  if (!VERSION.test(latest)) throw new ConfigError(t('update.registryVersion'));
   if (compareVersions(latest, current) <= 0) {
-    options.out(`已是最新版本 ${current}。`);
+    options.out(t('update.upToDate', { version: current }));
     if (options.check) return 0;
-    if (options.post) options.out('将执行 Claude Code hooks 和回复桥接维护。');
+    if (options.post) options.out(t('update.maintenanceNote'));
     return await runMaintenance(options, false);
   }
-  options.out(`当前版本 ${current}，npm 最新版本 ${latest}。`);
-  if (options.check) { options.out('运行 dev-notify update 更新。'); return 0; }
-  if (options.post) options.out('更新完成后会自动重新安装绑定当前配置的 Claude Code hooks，并重启正在运行的回复桥接；可用 --no-post 跳过。');
+  options.out(t('update.versions', { current, latest }));
+  if (options.check) { options.out(t('update.checkHint')); return 0; }
+  if (options.post) options.out(t('update.postNote'));
   if (!await confirmUpdate(latest, options)) {
-    options.out('已取消，没有更新。');
+    options.out(t('update.cancelled'));
     return 130;
   }
-  options.out(`运行 npm install -g ${NAME}@${latest} ...`);
+  options.out(t('update.running', { name: NAME, latest }));
   const result = (options.runner ?? npmRunner)(['install', '-g', `${NAME}@${latest}`], false);
-  if (result.status !== 0) throw new ConfigError(`更新没有完成。请检查 npm 权限，或手动运行 npm install -g ${NAME}@latest。`);
-  options.out(`已更新到 ${latest}。请重新打开终端后运行 dev-notify --version 确认。`);
+  if (result.status !== 0) throw new ConfigError(t('update.failed', { name: NAME }));
+  options.out(t('update.updated', { latest }));
   return await runMaintenance(options, true);
 }

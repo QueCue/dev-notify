@@ -1,4 +1,6 @@
 // 先解析为独立文本块，再在渲染后的可见文本上分段，不切断 HTML 实体或标签。
+import { t } from './i18n.js';
+
 export interface Span { text: string; tags: string[] }
 export interface Block { spans: Span[]; code: boolean }
 export const escapeHtml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -93,7 +95,7 @@ export function visibleText(blocks: Block[]): string {
   return blocks.map(block => block.spans.map(span => span.text).join('')).join('\n');
 }
 function cut(text: string, budget: number, measure: (text: string) => number): [string, string] {
-  if (budget < 1) throw new Error('可用空间不足，无法分段。');
+  if (budget < 1) throw new Error(t('format.noSpace'));
   let used = 0, end = 0;
   for (const ch of text) {
     const size = measure(ch);
@@ -101,7 +103,7 @@ function cut(text: string, budget: number, measure: (text: string) => number): [
     used += size;
     end += ch.length;
   }
-  if (!end && text) throw new Error('可用空间连一个字符都放不下。');
+  if (!end && text) throw new Error(t('format.oneChar'));
   if (end < text.length) {
     for (const boundary of ['\n\n', '\n', ' ']) {
       const offset = text.slice(0, end).lastIndexOf(boundary);
@@ -111,7 +113,7 @@ function cut(text: string, budget: number, measure: (text: string) => number): [
   return [text.slice(0, end), text.slice(end)];
 }
 export function telegramParts(blocks: Block[], budget: number): { html: string; plain: string }[] {
-  if (budget < 2) throw new Error('Telegram 标题或底部信息太长，没有剩余空间放正文。');
+  if (budget < 2) throw new Error(t('format.telegramHeader'));
   const output: { html: string; plain: string }[] = [];
   let html = '', plain = '';
   const flush = () => { if (plain) output.push({ html, plain }); html = ''; plain = ''; };
@@ -135,7 +137,7 @@ export function telegramParts(blocks: Block[], budget: number): { html: string; 
   return output.length ? output : [{ html: '', plain: '' }];
 }
 export function feishuParts(blocks: Block[], budget: number): string[] {
-  if (budget < 128) throw new Error('飞书标题或底部信息太长，没有剩余空间放正文。');
+  if (budget < 128) throw new Error(t('format.feishuHeader'));
   const output: string[] = [];
   let current = '';
   const size = (text: string) => Buffer.byteLength(text, 'utf8');
