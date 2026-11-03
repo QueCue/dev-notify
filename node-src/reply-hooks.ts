@@ -5,7 +5,7 @@ import { findSession } from './reply-platform.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
 import { bridgeStatus, startBridge } from './reply-bridge.js';
-import { createInteraction, showInteraction, waitInteraction } from './reply-interactions.js';
+import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
 import { makePlan, deliver, type Message, type Plan } from './channels.js';
 import { completeToolCall, endSessionInteractions, finishInteraction, matchingCall, registerToolCall } from './reply-outcomes.js';
 
@@ -158,7 +158,7 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
       const bot = await api('getMe', {});
       if (typeof bot?.username === 'string' && /^[A-Za-z0-9_]{5,64}$/.test(bot.username)) {
         const result = await (options.send ?? deliver)(makePlan('feishu', { title: 'Claude Code 需要你处理', level: 'warn', footer: '',
-          content: kind === 'question' ? request.questions.map(q => q.question + '\n' + q.options.map(o => o.label + '：' + o.description).join('\n')).join('\n\n') : '工具权限请求：' + data.tool_name,
+          content: kind === 'question' ? questionsContent(request.questions) : '工具权限请求：' + data.tool_name,
           reply: { token: request.id, url: `https://t.me/${bot.username}?start=${request.id}`, users: access.policy.users } }, access.config), access.config);
         if (result.ok) await stateTransaction(access, state => {
           const current = state.requests[request.id];

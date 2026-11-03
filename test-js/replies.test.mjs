@@ -174,6 +174,29 @@ test('飞书只在自身结构化通知成功且目标未变时去重，失败�
     }
   }
 });
+test('飞书卡片按题号和选项编号展示，题目与选项不粘连', async t => {
+  const ctx = await temp(t); ctx.env.FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/FAKE_ONLY';
+  await atomicJson(ctx.file, { ...CONFIG, feishu: { enabled: true } }); ctx.access = await accessReplies(ctx.file, ctx.env);
+  const questions = [QUESTION, { ...QUESTION, question: '选择语言？', header: '语言', multiSelect: true,
+    options: [{ label: 'TypeScript', description: '类型系统' }, { label: 'Python', description: '脚本' }] }];
+  const data = { session_id: TARGET.session, tool_use_id: 'feishu-format', tool_name: 'AskUserQuestion', tool_input: { questions } };
+  let plan;
+  const options = { env: ctx.env, session: async () => TARGET, api: () => ctx.api, bridge: async () => true, wait: async () => null,
+    send: async value => { plan = value; return { ok: true, channel: value.channel, sent: value.items.length, planned: value.items.length }; } };
+  await interactionHook({ ...data, hook_event_name: 'PreToolUse' }, ctx.file, options);
+  await interactionHook({ ...data, hook_event_name: 'PermissionRequest' }, ctx.file, options);
+  assert.ok(plan);
+  const content = plan.items[0].payload.card.elements.find(element => element.tag === 'markdown').content;
+  assert.match(content, /问题 1\/2：选择框架？/);
+  assert.match(content, /1\. React\n组件/);
+  assert.match(content, /2\. Vue\n渐进式/);
+  assert.match(content, /问题 2\/2：选择语言？/);
+  assert.match(content, /1\. TypeScript\n类型系统/);
+  assert.match(content, /2\. Python\n脚本/);
+  assert.match(content, /可多选：进入 Telegram 后逐项选择/);
+  assert.match(content, /────────/);
+  assert.doesNotMatch(content, /React：组件|Vue：渐进式/);
+});
 test('覆盖状态无法读取或授权撤销时失败开放，仅保留普通提醒而不回显错误', async t => {
   for (const revoked of [true, false]) {
     const ctx = await temp(t), { request } = await boundQuestion(ctx);

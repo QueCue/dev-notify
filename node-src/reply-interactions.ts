@@ -71,6 +71,13 @@ export function interactionContent(value: Interaction): string {
     + (q.multiSelect ? '\n\n可多选，选好后点击「提交所选项」；也可自定义输入。' : '\n\n点击选项直接回答，或选择自定义输入。')
     + '\n本机原生窗口同时可答；Claude 先收到的完整答案生效。远程窗口 5 分钟有效，不会默认选择。';
 }
+// 飞书卡片没有回调按钮，只展示全部题目和跳转入口；逐题编号并空行分隔，避免题目与选项粘连。
+export function questionsContent(questions: Question[]): string {
+  return questions.map((q, index) => `问题 ${index + 1}/${questions.length}：${q.question}\n\n`
+    + q.options.map((o, i) => `${i + 1}. ${o.label}\n${o.description}${(o as any).preview ? '\n' + (o as any).preview : ''}`).join('\n\n')
+    + (q.multiSelect ? '\n\n可多选：进入 Telegram 后逐项选择，再点击「提交所选项」；也可自定义输入。'
+      : '\n\n进入 Telegram 后点击选项直接回答，或选择自定义输入。')).join('\n\n────────\n\n');
+}
 export async function showInteraction(access: ReplyAccess, id: string, chat: string, api: TelegramApi): Promise<void> {
   const value = await stateTransaction(access, state => state.requests[id]);
   if (!active(value)) { await replyHint(api, chat, '⚠️ 交互已失效', '请从最新通知进入，或回到本机处理。'); return; }
