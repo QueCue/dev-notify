@@ -2,6 +2,13 @@
 
 简体中文 | [English](CHANGELOG.en.md)
 
+## 0.1.4 — 2026-11-04
+
+### 新增
+
+- 界面文案支持简体中文和英文：CLI 输出、错误提示、通知内容、交互按钮和回复桥接消息均可切换；可通过 `--lang`、`DEV_NOTIFY_LANG`、配置 `language` 字段或 `dev-notify language [zh|en]` 设置，默认中文。
+- 新增英文 README、SECURITY、CHANGELOG 和 npm 发布文档，并与中文文档互相链接切换。
+
 ## 0.1.3 — 2026-11-03
 
 ### 改进

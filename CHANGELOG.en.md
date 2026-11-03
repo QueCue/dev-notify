@@ -2,6 +2,13 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.1.4 — 2026-11-04
+
+### Added
+
+- The interface now supports Simplified Chinese and English: CLI output, error messages, notification content, interaction buttons, and reply bridge messages can all switch language. Set it with `--lang`, `DEV_NOTIFY_LANG`, the `language` configuration field, or `dev-notify language [zh|en]`; Chinese remains the default.
+- Added English README, SECURITY, CHANGELOG, and npm publishing documentation, with language links between the Chinese and English versions.
+
 ## 0.1.3 — 2026-11-03
 
 ### Improvements

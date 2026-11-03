@@ -89,7 +89,7 @@ jobs:
           import { createHash } from 'node:crypto';
           import path from 'node:path';
           const [pack] = JSON.parse(readFileSync(path.join(process.env.RUNNER_TEMP, 'npm-pack.json'), 'utf8'));
-          const allowed = /^(?:dist\/[^/]+\.js|package\.json|README\.md|SECURITY\.md|CHANGELOG\.md|LICENSE)$/;
+          const allowed = /^(?:dist\/[^/]+\.js|package\.json|README\.md|README\.en\.md|SECURITY\.md|SECURITY\.en\.md|CHANGELOG\.md|CHANGELOG\.en\.md|LICENSE)$/;
           if (!pack || path.basename(pack.filename) !== pack.filename || !pack.filename.endsWith('.tgz') || pack.files.some(f => !allowed.test(f.path))) {
             throw new Error('发布压缩包包含白名单以外文件或非法路径。');
           }
