@@ -1,5 +1,12 @@
 # 更新记录
 
+## 0.1.2 — 2026-11-03
+
+### 改进
+
+- `dev-notify update` 安装成功后自动重新安装绑定当前配置的 Claude Code hooks，并重启正在运行的回复桥接；新增 `--no-post` 跳过这些维护步骤。
+- `integration claude-code install` / `remove` 支持 `--yes`，供自动化或 `update` 的维护流程使用。
+
 ## 0.1.1 — 2026-11-03
 
 ### 新增

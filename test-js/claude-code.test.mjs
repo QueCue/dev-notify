@@ -202,13 +202,14 @@ test('CLI 单独安装、查询和移除共用同一套确认与配置合并逻�
   assert.equal((await invoke(ctx.env, ['integration', 'claude-code', 'remove'], { prompts: ui(['n']) })).code, 130);
   assert.equal((await invoke(ctx.env, ['integration', 'claude-code', 'remove'], { prompts: ui(['y']) })).code, 0);
 });
-test('无可用渠道不能单独安装，--yes 不能跳过集成确认', async t => {
+test('无可用渠道不能单独安装，--yes 可跳过集成确认', async t => {
   const ctx = await temp(t);
   const disabled = { ...ctx.env, TELEGRAM_BOT_TOKEN: '', FEISHU_WEBHOOK: '' };
   assert.equal((await invoke(disabled, ['integration', 'claude-code', 'install'], { prompts: ui() })).code, 2);
-  assert.equal((await invoke(ctx.env, ['integration', 'claude-code', 'install', '--yes'], { prompts: ui() })).code, 2);
-  assert.equal((await invoke(ctx.env, ['integration', 'list', 'extra'])).code, 2);
   await assert.rejects(readFile(ctx.file), { code: 'ENOENT' });
+  assert.equal((await invoke(ctx.env, ['integration', 'claude-code', 'install', '--yes'])).code, 0);
+  assert.equal((await invoke(ctx.env, ['integration', 'claude-code', 'status'])).code, 0);
+  assert.equal((await invoke(ctx.env, ['integration', 'list', 'extra'])).code, 2);
 });
 test('setup 一次确认完成保存、测试和 Claude Code 安装', async t => {
   const ctx = await temp(t); await rm(ctx.config);

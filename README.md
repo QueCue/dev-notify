@@ -2,7 +2,7 @@
 
 跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code、Unity 或项目目录。
 
-**npm 包名为 `@quecue/dev-notify`。`0.1.1` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
+**npm 包名为 `@quecue/dev-notify`。`0.1.2` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
 
 ## 安装与使用
 
@@ -46,9 +46,10 @@ node dist/cli.js send --title "分段预览" --content-file result.txt --dry-run
 dev-notify update           # 检查并在确认后运行 npm install -g
 dev-notify update --check   # 只检查，不安装
 dev-notify update --yes     # 跳过确认（适合脚本）
+dev-notify update --no-post # 只更新包，不执行 hooks/桥接维护
 ```
 
-实际的完整性校验、registry 配置、权限处理和原生依赖解析仍由 npm 完成。更新后请重新运行 `dev-notify integration claude-code install`；如使用远程回复，还需重启桥接。
+实际的完整性校验、registry 配置、权限处理和原生依赖解析仍由 npm 完成。安装成功后，`update` 会自动重新安装绑定当前配置的 Claude Code hooks（已存在且配置匹配时），并重启正在运行的回复桥接；不需要时可用 `--no-post` 跳过。
 
 ## 已提供的功能
 
@@ -101,6 +102,8 @@ dev-notify integration claude-code install
 dev-notify integration claude-code status
 dev-notify integration claude-code remove
 ```
+
+`install` / `remove` 可加 `--yes` 跳过确认，供自动化或 `update` 的维护流程使用。
 
 源码验证时将上述 `dev-notify` 替换为 `node dist/cli.js`。安装可用 `--config <绝对或相对路径>` 绑定指定通知配置；执行时将其解析为绝对路径并保存到 hook 参数。自定义 `DEV_NOTIFY_HOME` 的使用者应在安装时设置该变量。
 

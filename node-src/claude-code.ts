@@ -28,6 +28,8 @@ export interface IntegrationStatus {
   interaction: number;
   others: number;
   disabled: boolean;
+  /** 本工具 hooks 绑定的通知配置路径（去重）。 */
+  configs: string[];
 }
 const record = (value: unknown): value is Settings => value !== null && typeof value === 'object' && !Array.isArray(value);
 const yes = (value: string) => /^(y|yes)$/i.test(value.trim());
@@ -71,9 +73,10 @@ function owned(hook: Settings): boolean {
     && hook.args[4] === '--config' && typeof hook.args[5] === 'string';
 }
 function describe(file: string, data: Settings): IntegrationStatus {
-  const result = { file, stop: 0, notification: 0, lifecycle: 0, interaction: 0, others: 0, disabled: data.disableAllHooks === true };
+  const result = { file, stop: 0, notification: 0, lifecycle: 0, interaction: 0, others: 0, disabled: data.disableAllHooks === true, configs: [] as string[] };
   for (const event of EVENTS) for (const group of data.hooks?.[event] ?? []) for (const hook of group.hooks) {
     if (owned(hook)) {
+      if (!result.configs.includes(hook.args[5])) result.configs.push(hook.args[5]);
       if (event === 'Stop') result.stop++;
       else if (event === 'Notification') result.notification++;
       else if (['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'].includes(event)) result.interaction++;

@@ -15,8 +15,9 @@ import { accessReplies, configureReplies, disableReplies } from './reply-state.j
 import { startBridge, stopBridge, bridgeStatus, runBridge } from './reply-bridge.js';
 import type { ReplyHookOptions } from './reply-hooks.js';
 import { updatePackage } from './update.js';
+import { postUpdate } from './maintenance.js';
 
-export const VERSION = '0.1.1';
+export const VERSION = '0.1.2';
 const HELP = `dev-notify ${VERSION} — 跨平台开发任务通知
 
 命令：
@@ -30,10 +31,11 @@ const HELP = `dev-notify ${VERSION} — 跨平台开发任务通知
   credentials clear         移除当前 Node 凭据引用和条目（需要确认）
   paths                     显示配置路径（不会写入文件）
   doctor / status           离线检查（不会发送消息）
-  update [--check] [--yes]  检查并更新到 npm 最新版本（确认后调用 npm）
+  update [--check] [--yes] [--no-post]
+                            检查并更新到 npm 最新版本（确认后调用 npm）
   integration list          列出可用集成
   integration claude-code install / status / remove
-                            单独安装、查询或移除用户级 hooks
+                            单独安装、查询或移除用户级 hooks（install/remove 可用 --yes）
   reply setup               授权可信的 Telegram 私聊用户
   reply start / status / stop
                             启动、查询或停止回复桥接
@@ -79,7 +81,7 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
         title: { type: 'string' }, content: { type: 'string' }, 'content-file': { type: 'string' }, stdin: { type: 'boolean' },
         channel: { type: 'string' }, level: { type: 'string' }, footer: { type: 'string' }, 'dry-run': { type: 'boolean' },
         template: { type: 'boolean' }, yes: { type: 'boolean' },
-        'no-test': { type: 'boolean' }, 'no-hooks': { type: 'boolean' }, check: { type: 'boolean' },
+        'no-test': { type: 'boolean' }, 'no-hooks': { type: 'boolean' }, check: { type: 'boolean' }, 'no-post': { type: 'boolean' },
       } });
     } catch { throw new ConfigError('参数无效，请运行 --help 查看用法。'); }
     const { values, positionals } = parsed;
@@ -88,7 +90,7 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
     const [command, action, integrationAction] = positionals;
     const allowed: Record<string, string[]> = {
       send: ['title', 'content', 'content-file', 'stdin', 'channel', 'level', 'footer', 'dry-run'],
-      setup: ['template', 'yes', 'no-test', 'no-hooks'], paths: [], doctor: [], status: [], integration: [], credentials: [], reply: [], update: ['check', 'yes'],
+      setup: ['template', 'yes', 'no-test', 'no-hooks'], paths: [], doctor: [], status: [], integration: ['yes'], credentials: [], reply: [], update: ['check', 'yes', 'no-post'],
     };
     if (!command || !Object.hasOwn(allowed, command) || positionals.length > (command === 'integration' ? 3 : command === 'credentials' || command === 'reply' ? 2 : 1)
       || Object.keys(values).some(key => key !== 'config' && !allowed[command].includes(key))) throw new ConfigError('命令或选项组合不正确，请运行 --help 查看用法。');
@@ -99,6 +101,8 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
       return await updatePackage(VERSION, {
         out: context.out, prompts: context.prompts,
         check: !!values.check, yes: !!values.yes,
+        post: values['no-post'] ? undefined
+          : () => postUpdate({ config: file, env: context.env, out: context.out, err: context.err }),
       });
     }
     if (command === 'integration') {
@@ -118,12 +122,15 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
           : '这里只检查用户级文件。是否实际加载还受项目和托管策略影响，请在 Claude Code 的 /hooks 中确认。');
         return status.stop === 1 && status.notification === 1 && status.lifecycle === 3 && status.interaction === 5 && !status.disabled ? 0 : 1;
       }
-      const prompts = context.prompts ?? terminalPrompts();
+      const prompts = context.prompts ?? (values.yes
+        ? { out: context.out, text: async () => '', secret: async () => '' }
+        : terminalPrompts());
       if (integrationAction === 'install') {
         const config = await loadConfig(file, true, context.env);
         if (!ready(config, 'telegram') && !ready(config, 'feishu')) throw new ConfigError('请先运行 setup 配置至少一个通知渠道，再安装 Claude Code hooks。');
       }
-      return await configureClaudeCode(file, integrationAction as 'install' | 'remove', prompts, { env: context.env }) ? 0 : 130;
+      return await configureClaudeCode(file, integrationAction as 'install' | 'remove', prompts,
+        { env: context.env, confirm: values.yes ? false : undefined }) ? 0 : 130;
     }
     if (command === 'reply') {
       if (!['setup', 'start', 'status', 'stop', 'disable', 'run'].includes(action)) throw new ConfigError('请使用 reply setup / start / status / stop / disable / run。');

@@ -61,6 +61,8 @@ export interface UpdateOptions {
   yes: boolean;
   runner?: UpdateRunner;
   latest?: () => Promise<string>;
+  /** 安装成功后运行维护步骤；未提供时只打印提示。 */
+  post?: () => Promise<number>;
 }
 
 async function confirmUpdate(latest: string, options: UpdateOptions): Promise<boolean> {
@@ -82,6 +84,7 @@ export async function updatePackage(current: string, options: UpdateOptions): Pr
   }
   options.out(`当前版本 ${current}，npm 最新版本 ${latest}。`);
   if (options.check) { options.out('运行 dev-notify update 更新。'); return 0; }
+  if (options.post) options.out('更新完成后会自动重新安装绑定当前配置的 Claude Code hooks，并重启正在运行的回复桥接；可用 --no-post 跳过。');
   if (!await confirmUpdate(latest, options)) {
     options.out('已取消，没有更新。');
     return 130;
@@ -90,6 +93,15 @@ export async function updatePackage(current: string, options: UpdateOptions): Pr
   const result = (options.runner ?? npmRunner)(['install', '-g', `${NAME}@${latest}`], false);
   if (result.status !== 0) throw new ConfigError(`更新没有完成。请检查 npm 权限，或手动运行 npm install -g ${NAME}@latest。`);
   options.out(`已更新到 ${latest}。请重新打开终端后运行 dev-notify --version 确认。`);
-  options.out('如有 Claude Code hooks，请运行 dev-notify integration claude-code install；如使用远程回复，请重启桥接。');
+  if (options.post) {
+    const code = await options.post();
+    if (code !== 0) {
+      options.out('更新已完成，但后续维护步骤没有全部成功；请按上面的提示检查。');
+      return code;
+    }
+    options.out('更新后的维护步骤已完成。');
+  } else {
+    options.out('如有 Claude Code hooks，请运行 dev-notify integration claude-code install；如使用远程回复，请重启桥接。');
+  }
   return 0;
 }
