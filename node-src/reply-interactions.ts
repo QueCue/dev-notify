@@ -5,7 +5,7 @@ import { stateTransaction, targetEpoch, type Entry, type Interaction, type Quest
 import { replyHint, type TelegramApi } from './reply-telegram.js';
 import { finishInteraction } from './reply-outcomes.js';
 
-export const INTERACTION_MS = 5 * 60 * 1000;
+export const INTERACTION_MS = 10 * 60 * 1000;
 export function questionsFrom(input: Record<string, any>): Question[] {
   if (!Array.isArray(input.questions) || input.questions.length < 1 || input.questions.length > 4) throw new ConfigError('问题结构无效，请在本机回答。');
   const questions = input.questions as Question[];
@@ -37,7 +37,7 @@ export async function createInteraction(access: ReplyAccess, target: SessionTarg
     }
     // 不同 tool_use_id 可并行；无绑定的单元级调用仍只保留一个活动交互。
     if (!call) for (const old of Object.values(state.requests)) if (old.session === target.session && !old.result) {
-      finishInteraction(old, { kind: old.claimed ? 'unknown' : 'not-applied', text: '问题已切换，旧请求不再接受答案。' });
+      finishInteraction(old, { kind: old.claimed ? 'unknown' : 'not-applied', reason: 'switched', text: '问题已切换，旧请求不再接受答案。' });
     }
     state.requests[value.id] = value;
     state.entries['token:' + value.id] = { session: target.session, epoch: value.epoch, request: value.id, updated: Date.now() };
@@ -69,7 +69,7 @@ export function interactionContent(value: Interaction): string {
   return `问题 ${value.index + 1}/${value.questions.length}：${q.question}\n\n`
     + q.options.map((o, i) => `${i + 1}. ${o.label}\n${o.description}${(o as any).preview ? '\n' + (o as any).preview : ''}`).join('\n\n')
     + (q.multiSelect ? '\n\n可多选，选好后点击「提交所选项」；也可自定义输入。' : '\n\n点击选项直接回答，或选择自定义输入。')
-    + '\n本机原生窗口也可以同时作答；Claude 先收到的完整答案生效。远程窗口有效期为 5 分钟，不会自动选择。';
+    + '\n本机原生窗口也可以同时作答；Claude 先收到的完整答案生效。远程窗口有效期为 10 分钟，不会自动选择。';
 }
 // 飞书卡片没有回调按钮，只展示全部题目和跳转入口；逐题编号并空行分隔，避免题目与选项粘连。
 export function questionsContent(questions: Question[]): string {
@@ -131,7 +131,7 @@ export async function handleInteractionCallback(access: ReplyAccess, callback: a
   const outcome = await stateTransaction(access, state => {
     const value = state.requests[id], target = value && state.sessions[value.session];
     if (!active(value) || value.index !== Number(index) || !target || targetEpoch(target) !== value.epoch) return 'expired';
-    if (operation === 'l') { finishInteraction(value, { kind: 'not-applied', text: '已关闭远程答题，本机仍可正常处理。' }); return 'local'; }
+    if (operation === 'l') { finishInteraction(value, { kind: 'not-applied', reason: 'closed', text: '已关闭远程答题，本机仍可正常处理。' }); return 'local'; }
     const question = value.questions[value.index]?.question;
     const previousIndex = value.index;
     if (value.kind === 'permission') {
@@ -213,7 +213,7 @@ export async function waitInteraction(access: ReplyAccess, value: Interaction, f
   }
   await stateTransaction(access, state => {
     const request = state.requests[value.id];
-    if (request && !request.result) finishInteraction(request, { kind: request.claimed ? 'unknown' : 'not-applied', text: options.signal?.aborted ? '交互等待已取消，远程答案是否生效还没有确认。' : '远程交互等待超时，尚未确认生效。你仍可在本机继续处理。' });
+    if (request && !request.result) finishInteraction(request, { kind: request.claimed ? 'unknown' : 'not-applied', reason: options.signal?.aborted ? 'failed' : 'expired', text: options.signal?.aborted ? '交互等待已取消，远程答案是否生效还没有确认。' : '远程答题已超时，没有提交任何答案；你仍可在本机继续处理。' });
   });
   return null;
 }

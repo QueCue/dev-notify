@@ -18,10 +18,21 @@ export function finishInteraction(value: Interaction, result: InteractionResult)
   delete value.response;
   for (const receipt of value.receipts ?? []) { receipt.answer = ''; delete receipt.question; }
 }
+function endLabel(result: InteractionResult): string {
+  if (result.kind === 'unknown') return '已关闭 · 结果待核实';
+  if (result.kind === 'applied') return '已处理 · 不再接受答案';
+  switch (result.reason) {
+    case 'expired': return '已超时 · 未作答';
+    case 'session': case 'switched': return '已失效 · 未作答';
+    case 'closed': return '已关闭 · 不再接受答案';
+    case 'processed': return '已处理 · 不再接受答案';
+    default: return '已结束 · 不再接受答案';
+  }
+}
 export function endSessionInteractions(state: ReplyState, session: string, reason: string): void {
   for (const call of Object.values(state.calls)) if (call.session === session) call.ended = true;
   for (const value of Object.values(state.requests)) if (value.session === session && !value.result) finishInteraction(value, {
-    kind: value.claimed ? 'unknown' : 'not-applied',
+    kind: value.claimed ? 'unknown' : 'not-applied', reason: 'session',
     text: value.claimed ? reason + '；还没有收到本次答案的生效确认，请检查终端。' : reason + '；这次远程答案没有回传。',
   });
 }
@@ -77,13 +88,13 @@ export async function completeToolCall(access: ReplyAccess, data: any): Promise<
             ? { kind: 'applied', text: 'Claude 已确认采用了与你提交内容一致的答案。如果本机也提交了相同内容，这次结果无法说明是哪一方生效。' }
             : { kind: 'not-applied', text: 'Claude 已经结束问题，但没有采用你提交的答案；本机或其他端可能已经先处理。' };
       }
-      finishInteraction(value, { kind: 'not-applied', text: '问题已处理，旧按钮已失效。' });
+      finishInteraction(value, { kind: 'not-applied', reason: 'processed', text: '问题已处理，旧按钮已失效。' });
     } else if (data.hook_event_name === 'PostToolUse' && value.kind === 'permission') {
       const allow = value.claimed && value.receipts?.some(r => r.answer === 'allow');
       finishInteraction(value, allow
-        ? { kind: 'applied', text: '工具已获准并执行完成。如果本机同时也批准了，完成事件本身无法说明是哪一方放行。' }
-        : { kind: 'not-applied', text: '工具已经获准执行，这次远程决定没有阻止执行。' });
-    } else finishInteraction(value, { kind: value.claimed ? 'unknown' : 'not-applied', text: value.claimed
+        ? { kind: 'applied', reason: 'processed', text: '工具已获准并执行完成。如果本机同时也批准了，完成事件本身无法说明是哪一方放行。' }
+        : { kind: 'not-applied', reason: 'processed', text: '工具已经获准执行，这次远程决定没有阻止执行。' });
+    } else finishInteraction(value, { kind: value.claimed ? 'unknown' : 'not-applied', reason: 'failed', text: value.claimed
       ? '工具执行失败、被拒绝或取消。这个事件无法说明远程决定是否生效，请检查终端。'
       : '请求失败、被拒绝或取消，这次远程决定没有回传。' });
   });
@@ -94,11 +105,18 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
   if (!current || current.identity !== access.identity) return;
   const work = await stateTransaction(access, state => {
     for (const value of Object.values(state.requests)) {
+      if (value.result) continue;
       const target = state.sessions[value.session];
-      if (!value.result && (!target || targetEpoch(target) !== value.epoch || value.expires <= Date.now())) finishInteraction(value, {
-        kind: value.claimed ? 'unknown' : 'not-applied', text: value.claimed
+      const ended = !target || targetEpoch(target) !== value.epoch;
+      if (!ended && value.expires > Date.now()) continue;
+      finishInteraction(value, {
+        kind: value.claimed ? 'unknown' : 'not-applied',
+        reason: ended ? 'session' : 'expired',
+        text: value.claimed
           ? '等待生效确认超时，或会话已经切换。结果暂时未知，请检查终端。'
-          : '交互已过期或会话已结束；远程答案没有回传，你仍可在本机界面继续处理。',
+          : ended
+            ? '会话已结束或已经切换；远程答案没有回传，你仍可在本机界面继续处理。'
+            : '远程答题已超时；没有提交任何答案，你仍可在本机界面继续处理。',
       });
     }
     return Object.values(state.requests).filter(value => value.result || value.receipts?.some(r => r.result));
@@ -134,7 +152,7 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
         const actual = state.requests[value.id]?.messages?.find(m => m.chat === message.chat && m.message === message.message);
         if (actual) actual.cleared = true;
       });
-      const label = value.result.kind === 'unknown' ? '已关闭 · 结果待核实' : value.result.text.includes('过期') ? '已过期 · 不再接受答案' : '已处理 · 不再接受答案';
+      const label = endLabel(value.result);
       await api('editMessageReplyMarkup', { chat_id: message.chat, message_id: message.message,
         reply_markup: { inline_keyboard: [[{ text: label, callback_data: `dn:q:${value.id}:0:l` }]] } })
         .catch(() => log('Telegram 旧按钮没有移除成功。服务端仍会拒绝这个请求。'));

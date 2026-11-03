@@ -172,14 +172,14 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
   } catch (error) {
     await stateTransaction(access, state => {
       const current = state.requests[request.id];
-      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', text: '远程交互处理失败，请在本机检查。' });
+      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', reason: 'failed', text: '远程交互处理失败，请在本机检查。' });
     }).catch(() => {});
     throw error;
   } finally {
     process.off('SIGTERM', cancel); process.off('SIGINT', cancel);
     if (controller.signal.aborted) await stateTransaction(access, state => {
       const current = state.requests[request.id];
-      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', text: '交互等待已取消，远程答案是否生效还没有确认。' });
+      if (current) finishInteraction(current, { kind: current.claimed ? 'unknown' : 'not-applied', reason: 'failed', text: '交互等待已取消，远程答案是否生效还没有确认。' });
     }).catch(() => {});
   }
 }
