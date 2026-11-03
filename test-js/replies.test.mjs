@@ -15,7 +15,7 @@ import { createInteraction, showInteraction, waitInteraction, questionsFrom, int
 import { processIdentity, findSession, findSessionName, validateTarget, sanitizeReply, injectReply, runCommand } from '../dist/reply-platform.js';
 import { telegramApi } from '../dist/reply-telegram.js';
 import { runBridge, bridgeStatus, stopBridge } from '../dist/reply-bridge.js';
-import { makePlan, deliver } from '../dist/channels.js';
+import { makePlan, deliver, TransportError } from '../dist/channels.js';
 import { main } from '../dist/cli.js';
 import { configureClaudeCode, replyHooksReady } from '../dist/claude-code.js';
 import { registerToolCall, matchingCall, callKey, completeToolCall, drainInteractionFeedback } from '../dist/reply-outcomes.js';
@@ -685,6 +685,12 @@ test('webhook 与残留 Bot 锁不抢占，停止不会 kill 复用 PID', async 
   await assert.rejects(runBridge(ctx.file, { env: ctx.env, api: () => ctx.api }), /同一个 Bot/);
   assert.equal(await readFile(path.join(directory, ctx.policy.bot + '.lock'), 'utf8'), 'existing-owner');
   assert.equal(await stopBridge(path.join(ctx.root, 'unused-config.json')), true);
+});
+test('桥接记录网络错误原因，而不是只留下通用失败', async t => {
+  const ctx = await temp(t), message = '网络请求失败或响应无效。';
+  await assert.rejects(runBridge(ctx.file, { env: ctx.env, api: () => async () => { throw new TransportError(message); }, maxIterations: 0 }),
+    error => error.message === message);
+  assert.equal((await bridgeStatus(ctx.file)).error, message);
 });
 test('macOS 进程身份必须是前台 claude，Windows 进程名称/生日必须可验证', async () => {
   assert.deepEqual(await processIdentity(123, 'win32', async (_c, args, input) => {

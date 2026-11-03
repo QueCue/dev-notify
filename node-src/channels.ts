@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Config } from './config.js';
+import { ConfigError, type Config } from './config.js';
 import { t } from './i18n.js';
 import { escapeHtml, feishuParts, parseMarkdown, partTitle, telegramParts } from './formatting.js';
 
@@ -12,7 +12,7 @@ export interface Plan { channel: Channel; items: Item[]; recipients: number;
   onSent?: (item: Item, response: Record<string, any>) => Promise<void> }
 export interface Result { channel: Channel; sent: number; planned: number; ok: boolean; error?: string }
 export type Request = (url: string, payload: Record<string, any>) => Promise<Record<string, any>>;
-export class TransportError extends Error {}
+export class TransportError extends ConfigError {}
 const icons = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '❌' };
 const colors = { info: 'blue', success: 'green', warn: 'yellow', error: 'red' };
 const bytes = (data: unknown) => Buffer.byteLength(JSON.stringify(data), 'utf8');

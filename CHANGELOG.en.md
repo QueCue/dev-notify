@@ -2,6 +2,12 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.1.5 — 2026-11-04
+
+### Fixed
+
+- `reply run`, bridge status, and the CLI now show the specific reason a network request failed instead of only a generic failure message; secrets are still never included in the output.
+
 ## 0.1.4 — 2026-11-04
 
 ### Added
