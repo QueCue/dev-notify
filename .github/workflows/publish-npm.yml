@@ -1,0 +1,199 @@
+name: Publish npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已存在的版本标签，例如 v0.1.0-alpha.3'
+        required: true
+        type: string
+        default: 'v0.1.0-alpha.3'
+      update_latest:
+        description: '预发布版本同时更新 latest（首次 alpha.3 发布时勾选）'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 验证并打包
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      dist_tag: ${{ steps.release.outputs.dist_tag }}
+      filename: ${{ steps.pack.outputs.filename }}
+      integrity: ${{ steps.pack.outputs.integrity }}
+    steps:
+      - name: 读取本次运行的源码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: 固定支持 OIDC 标签管理的 npm
+        run: npm install --global npm@11.21.0 --ignore-scripts --registry=https://registry.npmjs.org/
+
+      - name: 核对版本标签和源码
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?$/.exec(pkg.version);
+          if (pkg.name !== '@quecue/dev-notify' || !match || process.env.RELEASE_TAG !== `v${pkg.version}`) {
+            throw new Error('标签必须与当前 package.json 版本完全一致，仅支持正式版或 alpha/beta/rc.N。');
+          }
+          const ref = `refs/tags/${process.env.RELEASE_TAG}`;
+          execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], { stdio: 'pipe' });
+          // 手动首次发布允许增加 CI 配置，但发布源码必须与既有标签一致；不删除或重打标签。
+          execFileSync('git', ['diff', '--exit-code', ref, 'HEAD', '--', '.', ':!.github'], { stdio: 'inherit' });
+          const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          if (head !== process.env.GITHUB_SHA) throw new Error('构建源码与工作流运行提交不一致，拒绝生成错误的来源证明。');
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${pkg.version}\ndist_tag=${match[4] || 'latest'}\n`);
+          NODE
+
+      - name: 安装锁定依赖，不执行安装脚本
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org/
+
+      - name: 编译并运行回归
+        run: npm test
+
+      - name: 打包并检查发布白名单
+        id: pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-package"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/npm-package" > "$RUNNER_TEMP/npm-pack.json"
+          node --input-type=module <<'NODE'
+          import { readFileSync, readdirSync, appendFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import path from 'node:path';
+          const [pack] = JSON.parse(readFileSync(path.join(process.env.RUNNER_TEMP, 'npm-pack.json'), 'utf8'));
+          const allowed = /^(?:dist\/[^/]+\.js|package\.json|README\.md|SECURITY\.md|CHANGELOG\.md|LICENSE)$/;
+          if (!pack || path.basename(pack.filename) !== pack.filename || !pack.filename.endsWith('.tgz') || pack.files.some(f => !allowed.test(f.path))) {
+            throw new Error('发布压缩包包含白名单以外文件或非法路径。');
+          }
+          const expected = readdirSync('node-src').filter(n => n.endsWith('.ts')).map(n => 'dist/' + n.replace(/\.ts$/, '.js')).sort();
+          const actual = pack.files.map(f => f.path).filter(n => n.startsWith('dist/')).sort();
+          if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error('编译文件清单与源码不一致。');
+          const bytes = readFileSync(path.join(process.env.RUNNER_TEMP, 'npm-package', pack.filename));
+          const integrity = 'sha512-' + createHash('sha512').update(bytes).digest('base64');
+          if (integrity !== pack.integrity) throw new Error('压缩包完整性不一致。');
+          appendFileSync(process.env.GITHUB_OUTPUT, `filename=${pack.filename}\nintegrity=${integrity}\n`);
+          NODE
+
+      - name: 保存已验证的发布包
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm-package/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    name: OIDC 发布并核验
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: 配置 Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: 固定支持 OIDC 标签管理的 npm
+        run: npm install --global npm@11.21.0 --ignore-scripts --registry=https://registry.npmjs.org/
+
+      - name: 获取已验证的发布包
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: npm-package
+
+      - name: 发布、更新标签并核验远端完整性
+        env:
+          RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+          RELEASE_DIST_TAG: ${{ needs.verify.outputs.dist_tag }}
+          RELEASE_FILENAME: ${{ needs.verify.outputs.filename }}
+          RELEASE_INTEGRITY: ${{ needs.verify.outputs.integrity }}
+          UPDATE_LATEST: ${{ inputs.update_latest && 'true' || 'false' }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { spawnSync } from 'node:child_process';
+          import path from 'node:path';
+          import { setTimeout as delay } from 'node:timers/promises';
+          const registry = '--registry=https://registry.npmjs.org/';
+          const name = '@quecue/dev-notify', version = process.env.RELEASE_VERSION;
+          const spec = `${name}@${version}`, tag = process.env.RELEASE_DIST_TAG;
+          const filename = process.env.RELEASE_FILENAME;
+          if (path.basename(filename) !== filename || !filename.endsWith('.tgz')) throw new Error('压缩包路径无效。');
+          const artifact = path.resolve('npm-package', filename);
+          const integrity = 'sha512-' + createHash('sha512').update(readFileSync(artifact)).digest('base64');
+          if (integrity !== process.env.RELEASE_INTEGRITY) throw new Error('下载后的压缩包完整性与验证任务不一致。');
+          function npm(args, capture = false) {
+            const result = spawnSync('npm', [...args, registry], { encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit', timeout: 120000 });
+            if (result.error) throw result.error;
+            return result;
+          }
+          function readRegistry(args) {
+            const result = npm([...args, '--json'], true);
+            if (result.status !== 0) throw new Error('npm 查询失败；不猜测发布或标签状态，请检查任务日志。');
+            return JSON.parse(result.stdout);
+          }
+          const existing = npm(['view', spec, 'dist.integrity', '--json'], true);
+          if (existing.status === 0) {
+            if (JSON.parse(existing.stdout) !== integrity) throw new Error('此版本已存在且内容不同；不能覆盖 npm 版本，请使用新版本号。');
+            console.log('相同内容的版本已发布，跳过重复发布，继续核验标签。');
+          } else {
+            let error;
+            try { error = JSON.parse(existing.stdout).error; } catch {}
+            if (error?.code !== 'E404') throw new Error('无法确认版本是否存在，停止发布；不会把网络错误当作未发布。');
+            if (npm(['publish', artifact, '--tag', tag, '--access', 'public', '--ignore-scripts']).status !== 0) {
+              throw new Error('发布失败或结果未知；请核对 npm Trusted Publisher 的直接发布权限。不会自动重发。');
+            }
+          }
+          let confirmed = false;
+          for (let attempt = 0; attempt < 6; attempt++) {
+            const result = npm(['view', spec, 'dist.integrity', '--json'], true);
+            if (result.status === 0 && JSON.parse(result.stdout) === integrity) { confirmed = true; break; }
+            if (attempt < 5) await delay(5000);
+          }
+          if (!confirmed) throw new Error('尚未确认远端压缩包完整性；不重发，请稍后核验。');
+          const wanted = [...new Set([tag, ...(process.env.UPDATE_LATEST === 'true' ? ['latest'] : [])])];
+          for (const wantedTag of wanted) {
+            if (readRegistry(['view', name, 'dist-tags'])[wantedTag] !== version) {
+              if (npm(['dist-tag', 'add', spec, wantedTag]).status !== 0) throw new Error('版本可能已发布，但标签更新失败；请检查 Allow npm dist-tag 权限。');
+            }
+          }
+          const tags = readRegistry(['view', name, 'dist-tags']);
+          if (wanted.some(t => tags[t] !== version)) throw new Error('远端标签核验未通过。');
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## npm 发布完成\n\n- 版本：\`${spec}\`\n- 标签：${wanted.join(', ')}\n- 远端 SHA-512 完整性核验通过。\n`);
+          NODE
