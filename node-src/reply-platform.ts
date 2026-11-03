@@ -74,6 +74,23 @@ export async function findSession(session: string, options: SessionOptions = {})
   return { session, pid: d.pid, ...identity, title: typeof d.name === 'string' ? Array.from(d.name).slice(0, 60).join('') : '',
     cwd: typeof d.cwd === 'string' ? d.cwd : '', updated: Date.now(), working: false };
 }
+// 仅用于通知展示：按 sessionId 读取本地会话注册表名称，不做进程身份核验，失败时返回空。
+export async function findSessionName(session: string, options: { env?: Env; home?: string } = {}): Promise<string> {
+  if (!session || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) return '';
+  const directory = path.join(path.dirname(claudeSettingsPath(options.env, options.home ?? homedir())), 'sessions');
+  let names;
+  try { names = await readdir(directory); } catch { return ''; }
+  for (const name of names) {
+    if (!/^\d+\.json$/.test(name)) continue;
+    try {
+      const bytes = await readFile(path.join(directory, name));
+      if (bytes.length > 128 * 1024) continue;
+      const d = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      if (d.sessionId === session && typeof d.name === 'string' && d.name.trim()) return d.name;
+    } catch { /* 其他损坏或写入中的会话文件不提供名称。 */ }
+  }
+  return '';
+}
 export async function validateTarget(target: SessionTarget, options: SessionOptions = {}): Promise<boolean> {
   const current = await findSession(target.session, options);
   return current !== null && current.pid === target.pid && current.birth === target.birth && current.tty === target.tty;

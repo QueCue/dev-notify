@@ -247,8 +247,27 @@ test('Stop 使用最终正文并完整保留长内容，不读会话文件或思
   const message = claudeHookMessage(json(stop({ last_assistant_message: body, transcript_path: 'DO_NOT_READ',
     thinking: 'PRIVATE_THINKING', tool_results: 'PRIVATE_TOOL' })));
   assert.equal(message.content, body); assert.equal(message.level, 'success');
-  assert.match(message.footer, /项目：项目/); assert.match(message.footer, /test-session/);
+  assert.match(message.footer, /项目：C:\\work\\项目/); assert.match(message.footer, /test-session/);
   assert.ok(!JSON.stringify(message).includes('PRIVATE_'));
+});
+test('底部依次显示项目绝对路径、会话名称和会话 ID，缺失名称时省略主题', () => {
+  const named = claudeHookMessage(json(stop()), 'dev-notify-e9');
+  assert.deepEqual(named.footer.split('\n'), ['项目：C:\\work\\项目', '主题：dev-notify-e9', '会话：test-session']);
+  const unnamed = claudeHookMessage(json(stop()));
+  assert.deepEqual(unnamed.footer.split('\n'), ['项目：C:\\work\\项目', '会话：test-session']);
+  const bare = claudeHookMessage(json({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: '请批准' }));
+  assert.equal(bare.footer, '');
+});
+test('通知按 sessionId 从会话注册表读取主题名称并忽略损坏文件', async t => {
+  const ctx = await temp(t), sessions = path.join(ctx.directory, 'sessions');
+  await mkdir(sessions, { recursive: true });
+  await writeFile(path.join(sessions, '12345.json'), JSON.stringify({ pid: 12345, sessionId: 'test-session', name: '测试主题' }));
+  await writeFile(path.join(sessions, '12346.json'), '{BROKEN');
+  const plans = [];
+  await dispatchClaudeHook(json(stop()), ctx.config, { env: ctx.env, err: () => {},
+    send: async plan => { plans.push(plan); return { ok: true, channel: plan.channel, sent: plan.items.length, planned: plan.items.length }; } });
+  assert.equal(plans.length, 1);
+  assert.match(plans[0].items[0].plain, /项目：C:\\work\\项目\n主题：测试主题\n会话：test-session/);
 });
 test('Stop 缺少或空正文时诚实发送完成提示，不拿旧 transcript 冒充', () => {
   for (const value of [undefined, '', '  ']) {

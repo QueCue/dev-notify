@@ -12,7 +12,7 @@ import { processUpdate, drainReplies, textHash } from '../dist/reply-engine.js';
 import { lifecycleHook, attachReply, mapReplies, interactionHook, notificationCoverage } from '../dist/reply-hooks.js';
 import { dispatchClaudeHook } from '../dist/claude-hook.js';
 import { createInteraction, showInteraction, waitInteraction, questionsFrom, interactionContent } from '../dist/reply-interactions.js';
-import { processIdentity, findSession, validateTarget, sanitizeReply, injectReply, runCommand } from '../dist/reply-platform.js';
+import { processIdentity, findSession, findSessionName, validateTarget, sanitizeReply, injectReply, runCommand } from '../dist/reply-platform.js';
 import { telegramApi } from '../dist/reply-telegram.js';
 import { runBridge, bridgeStatus, stopBridge } from '../dist/reply-bridge.js';
 import { makePlan, deliver } from '../dist/channels.js';
@@ -671,6 +671,17 @@ test('会话元数据精确查找、重复 ID/进程出生变化一律拒绝', a
   assert.equal(await validateTarget({ ...found, birth: 'OLD' }, options), false);
   await atomicJson(path.join(directory, '12346.json'), { sessionId: TARGET.session, pid: 12346 });
   assert.equal(await findSession(TARGET.session, options), null);
+});
+test('会话名称读取只接受匹配 sessionId 的注册表名称，缺失或损坏时为空', async t => {
+  const ctx = await temp(t), directory = path.join(ctx.env.CLAUDE_CONFIG_DIR, 'sessions'); await mkdir(directory, { recursive: true });
+  assert.equal(await findSessionName(TARGET.session, { env: ctx.env }), '');
+  await writeFile(path.join(directory, '1.json'), '{BROKEN');
+  await writeFile(path.join(directory, '2.json'), Buffer.alloc(128 * 1024 + 1));
+  await atomicJson(path.join(directory, '3.json'), { sessionId: TARGET.session, name: '隔离测试会话' });
+  await atomicJson(path.join(directory, '4.json'), { sessionId: 'other-session', name: '其他' });
+  assert.equal(await findSessionName(TARGET.session, { env: ctx.env }), '隔离测试会话');
+  assert.equal(await findSessionName('other-session', { env: ctx.env }), '其他');
+  assert.equal(await findSessionName('../bad', { env: ctx.env }), '');
 });
 test('Windows 注入脚本通过 stdin 传文本，原生帮助类单独编译验证但绝不调用 Send', { skip: process.platform !== 'win32' }, async t => {
   const ctx = await temp(t), directory = path.join(ctx.env.CLAUDE_CONFIG_DIR, 'sessions'); await mkdir(directory, { recursive: true });
