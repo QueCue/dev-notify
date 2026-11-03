@@ -115,7 +115,7 @@ jobs:
     name: OIDC 发布并核验
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
@@ -171,30 +171,36 @@ jobs:
             if (result.status !== 0) throw new Error('npm 查询失败；不猜测发布或标签状态，请检查任务日志。');
             return JSON.parse(result.stdout);
           }
-          const existing = queryRegistry([spec, 'dist.integrity']);
-          if (existing.status === 0) {
-            if (JSON.parse(existing.stdout) !== integrity) throw new Error('此版本已存在且内容不同；不能覆盖 npm 版本，请使用新版本号。');
-            console.log('相同内容的版本已发布，跳过重复发布，继续核验标签。');
-          } else {
-            let error;
-            try { error = JSON.parse(existing.stdout).error; } catch {}
-            if (error?.code !== 'E404') throw new Error('无法确认版本是否存在，停止发布；不会把网络错误当作未发布。');
-            if (npm(['publish', artifact, '--tag', tag, '--access', 'public', '--ignore-scripts']).status !== 0) {
-              throw new Error('发布失败或结果未知；请核对 npm Trusted Publisher 的直接发布权限。不会自动重发。');
-            }
+          // 直接查询版本端点并带 cache-buster，避免 npm CLI 使用的包元数据 CDN 缓存滞后。
+          async function versionIntegrity() {
+            const endpoint = `https://registry.npmjs.org/${name.replace('/', '%2F')}/${version}?t=${Date.now()}`;
+            const response = await fetch(endpoint, { redirect: 'error', signal: AbortSignal.timeout(10000),
+              headers: { 'Cache-Control': 'no-cache, no-store', Accept: 'application/json' } });
+            if (response.status === 404) return null;
+            if (!response.ok) throw new Error(`npm registry 查询失败（HTTP ${response.status}）；不猜测发布状态。`);
+            const value = (await response.json())?.dist?.integrity;
+            if (typeof value !== 'string' || !value) throw new Error('npm registry 返回的版本元数据缺少完整性字段，停止发布。');
+            return value;
           }
-          let confirmed = existing.status === 0;
-          const deadline = Date.now() + 180000;
+          const existing = await versionIntegrity();
+          if (existing !== null) {
+            if (existing !== integrity) throw new Error('此版本已存在且内容不同；不能覆盖 npm 版本，请使用新版本号。');
+            console.log('相同内容的版本已发布，跳过重复发布，继续核验标签。');
+          } else if (npm(['publish', artifact, '--tag', tag, '--access', 'public', '--ignore-scripts']).status !== 0) {
+            throw new Error('发布失败或结果未知；请核对 npm Trusted Publisher 的直接发布权限。不会自动重发。');
+          }
+          let confirmed = existing !== null;
+          const deadline = Date.now() + 600000;
           for (let attempt = 1; !confirmed && Date.now() < deadline; attempt++) {
-            const result = queryRegistry([spec, 'dist.integrity']);
-            if (result.status === 0) {
-              if (JSON.parse(result.stdout) !== integrity) throw new Error('远端版本已可见，但完整性与本次包不同，停止标签更新。');
+            const remote = await versionIntegrity();
+            if (remote !== null) {
+              if (remote !== integrity) throw new Error('远端版本已可见，但完整性与本次包不同，停止标签更新。');
               confirmed = true; break;
             }
             console.log(`npm 已接受发布，等待 registry 可见（第 ${attempt} 次只读核验）；不会重复发布。`);
             if (Date.now() < deadline) await delay(Math.min(10000, deadline - Date.now()));
           }
-          if (!confirmed) throw new Error('npm 已接受发布，但 3 分钟内未确认远端完整性；标签更新尚未执行。请稍后重跑任务核验，不要重新发版。');
+          if (!confirmed) throw new Error('npm 已接受发布，但 10 分钟内未确认远端完整性；标签更新尚未执行。请稍后重跑任务核验，不要重新发版。');
           const wanted = [...new Set([tag, ...(process.env.UPDATE_LATEST === 'true' ? ['latest'] : [])])];
           for (const wantedTag of wanted) {
             if (readRegistry([name, 'dist-tags'])[wantedTag] !== version) {
