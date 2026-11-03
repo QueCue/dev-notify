@@ -17,7 +17,7 @@ import type { ReplyHookOptions } from './reply-hooks.js';
 import { updatePackage } from './update.js';
 import { postUpdate } from './maintenance.js';
 
-export const VERSION = '0.1.2';
+export const VERSION = '0.1.3';
 const HELP = `dev-notify ${VERSION} — 跨平台开发任务通知
 
 命令：
@@ -32,7 +32,7 @@ const HELP = `dev-notify ${VERSION} — 跨平台开发任务通知
   paths                     显示配置路径（不会写入文件）
   doctor / status           离线检查（不会发送消息）
   update [--check] [--yes] [--no-post]
-                            检查并更新到 npm 最新版本（确认后调用 npm）
+                            检查并更新到 npm 最新版本，并维护 hooks 和桥接
   integration list          列出可用集成
   integration claude-code install / status / remove
                             单独安装、查询或移除用户级 hooks（install/remove 可用 --yes）

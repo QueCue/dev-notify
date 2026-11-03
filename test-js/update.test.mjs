@@ -25,15 +25,27 @@ test('版本比较覆盖正式版与预发布', () => {
   assert.equal(compareVersions('0.1.0-beta.1', '0.1.0-alpha.9'), 1);
   assert.equal(compareVersions('0.1.0', '0.1.0'), 0);
 });
-test('已是最新版本或本地版本更新时不提示也不安装', async () => {
+test('已是最新版本或本地版本更新时仍执行维护，但不安装', async () => {
   for (const latest of ['0.1.1', '0.1.0-alpha.4']) {
     const h = harness(latest);
     assert.equal(await updatePackage('0.1.1', h.options), 0);
     assert.match(h.output.join('\n'), /已是最新版本 0\.1\.1/);
     assert.equal(h.calls.length, 0);
     assert.equal(h.promptsSeen.length, 0);
-    assert.equal(h.postCalls.length, 0);
+    assert.equal(h.postCalls.length, 1);
   }
+});
+test('已是最新版本且未提供维护步骤时不做任何事', async () => {
+  const h = harness('0.1.1');
+  h.options.post = undefined;
+  assert.equal(await updatePackage('0.1.1', h.options), 0);
+  assert.equal(h.postCalls.length, 0);
+  assert.doesNotMatch(h.output.join('\n'), /维护/);
+});
+test('已是最新版本时维护失败也返回非零', async () => {
+  const h = harness('0.1.1', { postCode: 1 });
+  assert.equal(await updatePackage('0.1.1', h.options), 1);
+  assert.match(h.output.join('\n'), /维护步骤没有全部成功/);
 });
 test('--check 只报告新版本，不提示、不安装、不维护', async () => {
   const h = harness('0.1.2', { check: true });

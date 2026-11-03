@@ -74,13 +74,29 @@ async function confirmUpdate(latest: string, options: UpdateOptions): Promise<bo
   return /^(y|yes)$/i.test(await prompts.text(`更新到 ${latest}？[y/N] `));
 }
 
+async function runMaintenance(options: UpdateOptions, updated: boolean): Promise<number> {
+  if (!options.post) {
+    if (updated) options.out('如有 Claude Code hooks，请运行 dev-notify integration claude-code install；如使用远程回复，请重启桥接。');
+    return 0;
+  }
+  const code = await options.post();
+  if (code !== 0) {
+    options.out(updated ? '更新已完成，但后续维护步骤没有全部成功；请按上面的提示检查。' : '维护步骤没有全部成功；请按上面的提示检查。');
+    return code;
+  }
+  options.out(updated ? '更新后的维护步骤已完成。' : '维护步骤已完成。');
+  return 0;
+}
+
 export async function updatePackage(current: string, options: UpdateOptions): Promise<number> {
   if (!VERSION.test(current)) throw new ConfigError('当前版本号格式不受支持，无法检查更新。');
   const latest = await (options.latest ?? fetchLatest)();
   if (!VERSION.test(latest)) throw new ConfigError('npm registry 返回的版本号格式不受支持。');
   if (compareVersions(latest, current) <= 0) {
     options.out(`已是最新版本 ${current}。`);
-    return 0;
+    if (options.check) return 0;
+    if (options.post) options.out('将执行 Claude Code hooks 和回复桥接维护。');
+    return await runMaintenance(options, false);
   }
   options.out(`当前版本 ${current}，npm 最新版本 ${latest}。`);
   if (options.check) { options.out('运行 dev-notify update 更新。'); return 0; }
@@ -93,15 +109,5 @@ export async function updatePackage(current: string, options: UpdateOptions): Pr
   const result = (options.runner ?? npmRunner)(['install', '-g', `${NAME}@${latest}`], false);
   if (result.status !== 0) throw new ConfigError(`更新没有完成。请检查 npm 权限，或手动运行 npm install -g ${NAME}@latest。`);
   options.out(`已更新到 ${latest}。请重新打开终端后运行 dev-notify --version 确认。`);
-  if (options.post) {
-    const code = await options.post();
-    if (code !== 0) {
-      options.out('更新已完成，但后续维护步骤没有全部成功；请按上面的提示检查。');
-      return code;
-    }
-    options.out('更新后的维护步骤已完成。');
-  } else {
-    options.out('如有 Claude Code hooks，请运行 dev-notify integration claude-code install；如使用远程回复，请重启桥接。');
-  }
-  return 0;
+  return await runMaintenance(options, true);
 }

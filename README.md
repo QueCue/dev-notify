@@ -2,7 +2,7 @@
 
 跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code、Unity 或项目目录。
 
-**npm 包名为 `@quecue/dev-notify`。`0.1.2` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
+**npm 包名为 `@quecue/dev-notify`。`0.1.3` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
 
 ## 安装与使用
 
@@ -49,7 +49,7 @@ dev-notify update --yes     # 跳过确认（适合脚本）
 dev-notify update --no-post # 只更新包，不执行 hooks/桥接维护
 ```
 
-实际的完整性校验、registry 配置、权限处理和原生依赖解析仍由 npm 完成。安装成功后，`update` 会自动重新安装绑定当前配置的 Claude Code hooks（已存在且配置匹配时），并重启正在运行的回复桥接；不需要时可用 `--no-post` 跳过。
+实际的完整性校验、registry 配置、权限处理和原生依赖解析仍由 npm 完成。安装成功后，`update` 会自动重新安装绑定当前配置的 Claude Code hooks（已存在且配置匹配时），并重启正在运行的回复桥接；不需要时可用 `--no-post` 跳过。在 0.1.3 及以后，即使已经是最新版本，`update` 也会执行同样的维护，因此可以用同一条命令完成升级后的收尾。
 
 ## 已提供的功能
 
