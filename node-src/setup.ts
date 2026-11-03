@@ -84,7 +84,7 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
   const { out } = prompts;
   out(`配置路径：${file}`);
   out('密钥隐藏输入并存入 Windows Credential Manager / macOS Keychain；JSON 只保存引用。');
-  out('不安装 hooks，不启用远程控制；只有额外同意测试时才发送消息。');
+  out('本步骤仅配置渠道；保存后可另行确认启用 Claude Code 通知，不启用远程控制。只有额外同意测试时才发送测试消息。');
   if (before && !yes(await prompts.text('已有配置，继续编辑？[y/N] '))) return false;
   const selection = await prompts.text('选择渠道：1 Telegram，2 飞书，3 两者；其他输入取消：');
   if (!['1', '2', '3'].includes(selection)) return false;

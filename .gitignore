@@ -19,7 +19,14 @@ credentials/
 *.dpapi
 *.setup.lock
 .config-*.tmp
+*.dev-notify.lock
+.dev-notify-*.tmp
 .DS_Store
 Thumbs.db
 node_modules/
 *.tgz
+*.reply.json
+*.reply.json.lock
+*.reply-data/
+.reply-*.tmp
+reply-bots/

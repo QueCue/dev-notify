@@ -4,9 +4,11 @@ import type { Config } from './config.js';
 import { escapeHtml, feishuParts, parseMarkdown, partTitle, telegramParts } from './formatting.js';
 
 export type Channel = 'telegram' | 'feishu';
-export interface Message { title: string; content: string; footer: string; level: 'info' | 'success' | 'warn' | 'error' }
+export interface Message { title: string; content: string; footer: string; level: 'info' | 'success' | 'warn' | 'error';
+  reply?: { token: string; url: string; users: string[] } }
 export interface Item { payload: Record<string, any>; plain?: string; recipient: string }
-export interface Plan { channel: Channel; items: Item[]; recipients: number }
+export interface Plan { channel: Channel; items: Item[]; recipients: number;
+  onSent?: (item: Item, response: Record<string, any>) => Promise<void> }
 export interface Result { channel: Channel; sent: number; planned: number; ok: boolean; error?: string }
 export type Request = (url: string, payload: Record<string, any>) => Promise<Record<string, any>>;
 export class TransportError extends Error {}
@@ -49,6 +51,7 @@ function card(message: Message, title: string, content: string): Record<string, 
   const elements: Record<string, any>[] = [];
   if (content) elements.push({ tag: 'markdown', content });
   if (message.footer) elements.push({ tag: 'hr' }, { tag: 'note', elements: [{ tag: 'plain_text', content: message.footer }] });
+  if (message.reply?.url) elements.push({ tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: '💬 在 Telegram 回复 Claude' }, url: message.reply.url, type: 'primary' }] });
   return { msg_type: 'interactive', card: { config: { wide_screen_mode: true },
     header: { template: colors[message.level], title: { tag: 'plain_text', content: title } }, elements } };
 }
@@ -66,7 +69,8 @@ export function makePlan(channel: Channel, message: Message, config: Config): Pl
       const plain = text(title, chunk.plain, message.footer, icon, false);
       if (plain.length > 4096) throw new Error('Telegram 分段超过消息限制');
       items.push({ recipient: chatId, plain, payload: { chat_id: chatId,
-        text: text(title, chunk.html, message.footer, icon, true), parse_mode: 'HTML', disable_web_page_preview: true } });
+        text: text(title, chunk.html, message.footer, icon, true), parse_mode: 'HTML', disable_web_page_preview: true,
+        ...(message.reply?.users.includes(chatId) ? { reply_markup: { inline_keyboard: [[{ text: '💬 回复 Claude', callback_data: 'dn:r:' + message.reply.token }]] } } : {}) } });
     });
     return { channel, items, recipients: config.telegram.chatIds.length };
   }
@@ -120,7 +124,10 @@ export async function deliver(plan: Plan, config: Config, request: Request = req
         });
         if (changed) response = await post(payload);
       }
-      if (telegram ? response.ok === true : response.code === 0) sent++;
+      if (telegram ? response.ok === true : response.code === 0) {
+        sent++;
+        if (plan.onSent) await plan.onSent(item, response);
+      }
       else { failed.add(item.recipient); error = '渠道拒绝发送，请检查凭据、接收人授权、签名或频率限制'; }
     } catch (cause) {
       failed.add(item.recipient);

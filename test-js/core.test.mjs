@@ -251,8 +251,8 @@ test('传输验证响应形状与最大字节数', async () => {
     await assert.rejects(requestJson('https://example.invalid', {}, async () => new Response(response)));
   }
 });
-test('应用集成未启用且非交互密钥向导不回显输入', async t => {
+test('可列出可选应用集成且非交互密钥向导不回显输入', async t => {
   const root = await temporary(t);
-  assert.match((await invoke(root, ['integration', 'list'])).text, /尚未迁入/);
+  assert.match((await invoke(root, ['integration', 'list'])).text, /可选通知集成/);
   assert.match((await invoke(root, ['setup'])).text, /交互终端/);
 });
