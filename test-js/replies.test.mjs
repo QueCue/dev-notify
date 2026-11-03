@@ -178,7 +178,7 @@ test('飞书卡片按题号和选项编号展示，题目与选项不粘连', as
   const ctx = await temp(t); ctx.env.FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/FAKE_ONLY';
   await atomicJson(ctx.file, { ...CONFIG, feishu: { enabled: true } }); ctx.access = await accessReplies(ctx.file, ctx.env);
   const questions = [QUESTION, { ...QUESTION, question: '选择语言？', header: '语言', multiSelect: true,
-    options: [{ label: 'TypeScript', description: '类型系统' }, { label: 'Python', description: '脚本' }] }];
+    options: [{ label: 'TypeScript', description: '类型系统' }, { label: '选项二', description: '第二个示例' }] }];
   const data = { session_id: TARGET.session, tool_use_id: 'feishu-format', tool_name: 'AskUserQuestion', tool_input: { questions } };
   let plan;
   const options = { env: ctx.env, session: async () => TARGET, api: () => ctx.api, bridge: async () => true, wait: async () => null,
@@ -192,7 +192,7 @@ test('飞书卡片按题号和选项编号展示，题目与选项不粘连', as
   assert.match(content, /2\. Vue\n渐进式/);
   assert.match(content, /问题 2\/2：选择语言？/);
   assert.match(content, /1\. TypeScript\n类型系统/);
-  assert.match(content, /2\. Python\n脚本/);
+  assert.match(content, /2\. 选项二\n第二个示例/);
   assert.match(content, /可多选：进入 Telegram 后逐项选择/);
   assert.match(content, /────────/);
   assert.doesNotMatch(content, /React：组件|Vue：渐进式/);
@@ -233,7 +233,7 @@ test('本机先答：等待立即结束，不输出远程答案，已登记提�
   await flushFeedback(ctx);
   const value = (await snapshot(ctx.access)).requests[request.id];
   assert.equal(value.receipts[0].result.kind, 'not-applied'); // 同答案也不能虚称远端回传成功
-  assert.ok(ctx.calls.some(c => c.payload.text?.includes('本机或其他应答端已先处理')));
+  assert.ok(ctx.calls.some(c => c.payload.text?.includes('本机或其他端已经先处理了')));
   assert.ok(ctx.calls.some(c => c.method === 'editMessageReplyMarkup'));
   await processUpdate(ctx.access, callback(2, request.id, 0, 'o0'), ctx.context);
   assert.match(ctx.calls.at(-1).payload.text, /未生效/);
@@ -247,7 +247,7 @@ test('远端先回传：完成事件前只有等待确认，实际答案一致�
   await completeToolCall(ctx.access, { ...data, hook_event_name: 'PostToolUse', tool_response: { answers: { [QUESTION.question]: 'Vue' } } });
   await flushFeedback(ctx); await flushFeedback(ctx);
   const final = ctx.calls.filter(c => c.payload.text?.includes('✅ 答案内容已生效'));
-  assert.equal(final.length, 1); assert.match(final[0].payload.text, /无法仅凭结果区分来源/);
+  assert.equal(final.length, 1); assert.match(final[0].payload.text, /无法说明是哪一方生效/);
   const value = (await snapshot(ctx.access)).requests[request.id];
   assert.deepEqual(value.input, {}); assert.equal(value.receipts[0].answer, ''); assert.equal(value.response, undefined);
 });
@@ -396,7 +396,7 @@ test('独立授权默认关闭，通知接收人不会自动获得远程输入�
   assert.equal(await configureReplies(ctx.file, ui(['']), ctx.env), false);
   assert.equal(await accessReplies(ctx.file, ctx.env), null);
   await assert.rejects(configureReplies(ctx.file, ui(['-333']), ctx.env), /私聊/);
-  await assert.rejects(configureReplies(ctx.file, ui(['999']), ctx.env), /明确私聊/);
+  await assert.rejects(configureReplies(ctx.file, ui(['999']), ctx.env), /私聊用户/);
 });
 test('授权必须确认，明确选择用户及逐次权限；重新授权不继承消息', async t => {
   const ctx = await temp(t);
@@ -404,7 +404,7 @@ test('授权必须确认，明确选择用户及逐次权限；重新授权不�
   const access = await accessReplies(ctx.file, ctx.env);
   assert.equal(access.policy.permissions, false); assert.notEqual(access.identity, ctx.access.identity);
   assert.equal(Object.keys((await snapshot(access)).entries).length, 0);
-  await assert.rejects(snapshot(ctx.access), /授权已撤销或变化/);
+  await assert.rejects(snapshot(ctx.access), /授权已撤销或发生变化/);
 });
 test('授权取消不写入，禁用需确认且不更改通知配置', async t => {
   const ctx = await temp(t), before = await readFile(ctx.file);
@@ -504,7 +504,7 @@ test('/chatid 只返回发送者本人私聊 ID，不授予其远程权限', asy
   await processUpdate(ctx.access, message(1, '/chatid', { chat: { id: 999, type: 'private' }, from: { id: 999 } }), ctx.context);
   assert.equal(ctx.calls[0].payload.chat_id, '999'); assert.match(ctx.calls[0].payload.text, /999/); assert.equal(ctx.inputs.length, 0);
 });
-test('按钮与飞书 deep link 的 force_reply 消息都注册映射', async t => {
+test('内联按钮强制回复，飞书 deep link 用普通提示清除旧键盘并注册映射', async t => {
   const ctx = await temp(t), token = 'b'.repeat(32);
   await stateTransaction(ctx.access, state => { state.entries['token:' + token] = { ...state.entries['tg:111:100'] }; });
   const cb = callback(1, token, 0, 'c'); cb.callback_query.data = 'dn:r:' + token;
@@ -512,6 +512,8 @@ test('按钮与飞书 deep link 的 force_reply 消息都注册映射', async t 
   const first = ctx.calls.find(c => c.method === 'sendMessage'); assert.equal(first.payload.reply_markup.force_reply, true);
   assert.ok((await snapshot(ctx.access)).entries['tg:111:501']);
   await processUpdate(ctx.access, message(2, '/start ' + token), ctx.context);
+  const hint = ctx.calls.filter(c => c.method === 'sendMessage').at(-1);
+  assert.deepEqual(hint.payload.reply_markup, { remove_keyboard: true });
   assert.ok((await snapshot(ctx.access)).entries['tg:111:502']);
 });
 test('工作中普通回复只排队；Stop 后提交，过期和目标 epoch 变化拒绝', async t => {
@@ -549,7 +551,7 @@ test('超长回复不截断、不拆任务，控制字符不触发终端按键',
   assert.equal(sanitizeReply('  中文\r\n下一行\x1b[31m\u2028 x  '), '中文 下一行 [31m  x');
   assert.equal(sanitizeReply('😀'.repeat(4000)).length, 8000);
   assert.throws(() => sanitizeReply('😀'.repeat(4001)), /4000/);
-  assert.throws(() => sanitizeReply('\x1b\x00'), /为空/);
+  assert.throws(() => sanitizeReply('\x1b\x00'), /没有可提交的内容/);
 });
 test('完成通知每段带按钮、只授权私聊可用；飞书跳转；每段发送后立即映射', async t => {
   const ctx = await temp(t), message = { title: '完成', content: '中文😀\n'.repeat(2000), level: 'success', footer: '' };
@@ -609,7 +611,7 @@ test('本次权限允许与拒绝走专用 hook JSON，绝不持久写规则', a
   const ctx = await temp(t);
   for (const [op, behavior] of [['a', 'allow'], ['d', 'deny']]) {
     const request = await createInteraction(ctx.access, TARGET, 'permission', { tool_name: 'Bash', tool_input: { command: 'npm test' }, permission_suggestions: ['NOT_UI_OPTIONS'] });
-    assert.match(interactionContent(request), /官方未提供完整/);
+    assert.match(interactionContent(request), /没有提供完整的本地按钮列表/);
     await processUpdate(ctx.access, callback(op === 'a' ? 1 : 2, request.id, 0, op), ctx.context);
     const response = await waitInteraction(ctx.access, request, ctx.context.fresh, { timeout: 100 });
     assert.equal(response.hookSpecificOutput.hookEventName, 'PermissionRequest');
@@ -671,7 +673,7 @@ test('webhook 与残留 Bot 锁不抢占，停止不会 kill 复用 PID', async 
   await assert.rejects(runBridge(ctx.file, { env: ctx.env, api: () => async () => ({ url: 'FAKE_ONLY' }), maxIterations: 0 }), /webhook/);
   const directory = path.join(appPaths(process.platform, ctx.env).data, 'reply-bots');
   await writeFile(path.join(directory, ctx.policy.bot + '.lock'), 'existing-owner');
-  await assert.rejects(runBridge(ctx.file, { env: ctx.env, api: () => ctx.api }), /已有相同 Bot/);
+  await assert.rejects(runBridge(ctx.file, { env: ctx.env, api: () => ctx.api }), /同一个 Bot/);
   assert.equal(await readFile(path.join(directory, ctx.policy.bot + '.lock'), 'utf8'), 'existing-owner');
   assert.equal(await stopBridge(path.join(ctx.root, 'unused-config.json')), true);
 });

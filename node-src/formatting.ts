@@ -93,7 +93,7 @@ export function visibleText(blocks: Block[]): string {
   return blocks.map(block => block.spans.map(span => span.text).join('')).join('\n');
 }
 function cut(text: string, budget: number, measure: (text: string) => number): [string, string] {
-  if (budget < 1) throw new Error('分段空间不足');
+  if (budget < 1) throw new Error('可用空间不足，无法分段。');
   let used = 0, end = 0;
   for (const ch of text) {
     const size = measure(ch);
@@ -101,7 +101,7 @@ function cut(text: string, budget: number, measure: (text: string) => number): [
     used += size;
     end += ch.length;
   }
-  if (!end && text) throw new Error('分段空间不足以容纳一个字符');
+  if (!end && text) throw new Error('可用空间连一个字符都放不下。');
   if (end < text.length) {
     for (const boundary of ['\n\n', '\n', ' ']) {
       const offset = text.slice(0, end).lastIndexOf(boundary);
@@ -111,7 +111,7 @@ function cut(text: string, budget: number, measure: (text: string) => number): [
   return [text.slice(0, end), text.slice(end)];
 }
 export function telegramParts(blocks: Block[], budget: number): { html: string; plain: string }[] {
-  if (budget < 2) throw new Error('Telegram 标题或辅助信息过长');
+  if (budget < 2) throw new Error('Telegram 标题或底部信息太长，没有剩余空间放正文。');
   const output: { html: string; plain: string }[] = [];
   let html = '', plain = '';
   const flush = () => { if (plain) output.push({ html, plain }); html = ''; plain = ''; };
@@ -135,7 +135,7 @@ export function telegramParts(blocks: Block[], budget: number): { html: string; 
   return output.length ? output : [{ html: '', plain: '' }];
 }
 export function feishuParts(blocks: Block[], budget: number): string[] {
-  if (budget < 128) throw new Error('飞书标题或辅助信息过长');
+  if (budget < 128) throw new Error('飞书标题或底部信息太长，没有剩余空间放正文。');
   const output: string[] = [];
   let current = '';
   const size = (text: string) => Buffer.byteLength(text, 'utf8');

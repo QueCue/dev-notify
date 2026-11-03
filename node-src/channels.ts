@@ -20,7 +20,7 @@ export async function requestJson(url: string, payload: Record<string, any>, fet
   try {
     const response = await fetcher(url, { method: 'POST', body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(10000) });
-    if (!response.body) throw new TransportError('服务端响应为空');
+    if (!response.body) throw new TransportError('服务端没有返回内容。');
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -29,16 +29,16 @@ export async function requestJson(url: string, payload: Record<string, any>, fet
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > 1024 * 1024) { await reader.cancel(); throw new TransportError('服务端响应超过大小限制'); }
+        if (size > 1024 * 1024) { await reader.cancel(); throw new TransportError('服务端响应过大，已停止读取。'); }
         chunks.push(value);
       }
     } finally { reader.releaseLock(); }
     const result = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
-    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TransportError('服务端未返回 JSON 对象');
+    if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TransportError('服务端返回的不是 JSON 对象。');
     return result;
   } catch (error) {
     if (error instanceof TransportError) throw error;
-    throw new TransportError('网络请求失败或响应无效；未自动重发，投递状态可能未知');
+    throw new TransportError('网络请求失败或响应无效。为避免重复通知，不会自动重发；这条消息可能没有送达。');
   }
 }
 function text(title: string, content: string, footer: string, icon: string, html: boolean): string {
@@ -56,7 +56,7 @@ function card(message: Message, title: string, content: string): Record<string, 
     header: { template: colors[message.level], title: { tag: 'plain_text', content: title } }, elements } };
 }
 export function makePlan(channel: Channel, message: Message, config: Config): Plan {
-  if (!message.title.trim()) throw new Error('通知标题不能为空');
+  if (!message.title.trim()) throw new Error('通知标题不能为空。');
   const blocks = parseMarkdown(message.content);
   if (channel === 'telegram') {
     const icon = icons[message.level];
@@ -67,7 +67,7 @@ export function makePlan(channel: Channel, message: Message, config: Config): Pl
     for (const chatId of config.telegram.chatIds) chunks.forEach((chunk, index) => {
       const title = partTitle(message.title, index, chunks.length);
       const plain = text(title, chunk.plain, message.footer, icon, false);
-      if (plain.length > 4096) throw new Error('Telegram 分段超过消息限制');
+      if (plain.length > 4096) throw new Error('Telegram 分段后仍然超过消息长度限制。');
       items.push({ recipient: chatId, plain, payload: { chat_id: chatId,
         text: text(title, chunk.html, message.footer, icon, true), parse_mode: 'HTML', disable_web_page_preview: true,
         ...(message.reply?.users.includes(chatId) ? { reply_markup: { inline_keyboard: [[{ text: '💬 回复 Claude', callback_data: 'dn:r:' + message.reply.token }]] } } : {}) } });
@@ -78,7 +78,7 @@ export function makePlan(channel: Channel, message: Message, config: Config): Pl
   const chunks = feishuParts(blocks, budget);
   const items = chunks.map((chunk, index) => {
     const payload = card(message, partTitle(message.title, index, chunks.length), chunk);
-    if (bytes(payload) + 128 > 28000) throw new Error('飞书分段超过请求大小限制');
+    if (bytes(payload) + 128 > 28000) throw new Error('飞书分段后仍然超过请求大小限制。');
     return { recipient: 'feishu', payload };
   });
   return { channel, items, recipients: 1 };
@@ -128,10 +128,10 @@ export async function deliver(plan: Plan, config: Config, request: Request = req
         sent++;
         if (plan.onSent) await plan.onSent(item, response);
       }
-      else { failed.add(item.recipient); error = '渠道拒绝发送，请检查凭据、接收人授权、签名或频率限制'; }
+      else { failed.add(item.recipient); error = '渠道拒绝了这次发送。请检查凭据、接收人授权、签名和频率限制。'; }
     } catch (cause) {
       failed.add(item.recipient);
-      error = cause instanceof TransportError ? cause.message : '发送失败；投递状态可能未知';
+      error = cause instanceof TransportError ? cause.message : '发送失败，这条消息可能没有送达。';
     }
     if (!telegram && !failed.has(item.recipient) && index + 1 < plan.items.length) await sleep(250);
   }

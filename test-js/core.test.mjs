@@ -57,7 +57,7 @@ test('配置拒绝秘密字段、类型错误、非安全整数', () => {
 });
 test('系统凭据引用未迁移时明确拒绝，不降级明文', () => {
   const source = { credentials: { backend: 'system', id: 'a'.repeat(32) } };
-  assert.throws(() => parseConfig(source, {}), /Python 原型/);
+  assert.throws(() => parseConfig(source, {}), /旧版原型/);
   assert.equal(parseConfig(source, fakeEnv).telegram.token, fakeEnv.TELEGRAM_BOT_TOKEN);
   const disabled = { ...source, telegram: { enabled: false }, feishu: { enabled: false } };
   assert.equal(parseConfig(disabled, {}).telegram.token, '');
@@ -79,7 +79,7 @@ test('模板排他创建，不覆盖原配置', async t => {
   const file = path.join(await temporary(t), 'config.json');
   await createConfig(file);
   const before = await readFile(file);
-  await assert.rejects(createConfig(file), /未覆盖/);
+  await assert.rejects(createConfig(file), /没有覆盖/);
   assert.deepEqual(await readFile(file), before);
 });
 test('UTF-8 解码拒绝无效字节', () => {
@@ -105,7 +105,7 @@ test('dry-run 不发送，不输出正文、接收人或秘密', async t => {
   const result = await invoke(await temporary(t), ['send', '--title', 'PRIVATE_TITLE', '--content', 'PRIVATE_BODY'.repeat(1000), '--dry-run'], fakeEnv);
   assert.equal(result.code, 0);
   for (const value of ['TEST_ONLY', 'PRIVATE_TITLE', 'PRIVATE_BODY']) assert.ok(!result.text.includes(value));
-  assert.match(result.text, /未发送/);
+  assert.match(result.text, /没有实际发送/);
 });
 test('显式缺失配置和缺少渠道均返回 2', async t => {
   const root = await temporary(t);
@@ -149,7 +149,7 @@ test('Markdown 支持标题、引用、列表、内联格式且保留链接地�
   assert.ok(chunk.plain.includes('☑ 完成'));
 });
 test('代码、长表格、emoji、特殊字符按最终可见长度分段且无内容丢失', () => {
-  const examples = ['😀中文<&> '.repeat(2000), '```python\n' + 'print("中文")\n'.repeat(1500) + '```',
+  const examples = ['😀中文<&> '.repeat(2000), '```text\n' + '示例代码行\n'.repeat(1500) + '```',
     '| ' + 'A'.repeat(1000) + ' | B |\n| --- | --- |\n' + '| x | y |\n'.repeat(8),
     '**' + '加粗😀'.repeat(2000) + '**'];
   for (const content of examples) {
@@ -253,6 +253,6 @@ test('传输验证响应形状与最大字节数', async () => {
 });
 test('可列出可选应用集成且非交互密钥向导不回显输入', async t => {
   const root = await temporary(t);
-  assert.match((await invoke(root, ['integration', 'list'])).text, /可选通知集成/);
+  assert.match((await invoke(root, ['integration', 'list'])).text, /支持通知/);
   assert.match((await invoke(root, ['setup'])).text, /交互终端/);
 });

@@ -64,7 +64,7 @@ test('原生适配器仅访问指定条目且不覆盖已存在凭据', () => {
   const store = new KeyringStore(Entry);
   assert.equal(store.read(ID), null);
   store.create(ID, VALUES); assert.deepEqual(store.read(ID), VALUES);
-  assert.throws(() => store.create(ID, VALUES), /未覆盖/);
+  assert.throws(() => store.create(ID, VALUES), /没有覆盖/);
   store.remove(ID); assert.equal(store.read(ID), null);
   assert.throws(() => store.read('../bad'), /引用无效/);
 });
@@ -124,14 +124,14 @@ test('更新留空保留，签名可清除，成功后删除旧条目', async t 
   assert.equal(store.read(saved.credentials.id).telegram_token, VALUES.telegram_token);
   assert.equal(store.read(saved.credentials.id).feishu_secret, '');
 });
-test('Python 引用迁移仅重新输入，不删除旧原型凭据', async t => {
+test('旧版原型引用迁移仅重新输入，不删除旧原型凭据', async t => {
   const { file } = await temp(t), store = new Store();
   const source = data(); source.credentials.backend = 'system';
   await writeFile(file, JSON.stringify(source));
   const ui = prompts(['1', '111', ''], [VALUES.telegram_token]);
   assert.equal(await wizard(file, { store, prompts: ui, env: {} }), true);
   assert.equal(store.deleted.includes(ID), false);
-  assert.ok(ui.output.some(line => line.includes('Python 原型旧凭据未删除')));
+  assert.ok(ui.output.some(line => line.includes('旧版原型的旧凭据仍然保留')));
 });
 test('缺失旧凭据可明确确认后重配', async t => {
   const { file } = await temp(t), store = new Store();
@@ -141,7 +141,7 @@ test('缺失旧凭据可明确确认后重配', async t => {
 test('保存后测试失败不伪装为保存失败或撤销配置', async t => {
   const { file } = await temp(t), store = new Store(), ui = prompts(['1', '111', ''], [VALUES.telegram_token]);
   assert.equal(await wizard(file, { store, prompts: ui, env: {}, testSend: async () => false }), true);
-  assert.ok(ui.output.some(line => line.includes('配置已保存，但测试通知失败')));
+  assert.ok(ui.output.some(line => line.includes('配置已保存。测试通知没有发送成功')));
   assert.equal(JSON.parse(await readFile(file, 'utf8')).credentials.backend, 'keyring');
 });
 test('网络测试使用环境覆盖后的最终配置', async t => {
@@ -162,7 +162,7 @@ test('配置替换失败保留旧文件，仅删除本次新条目', async t => 
 test('向导期间外部编辑不被覆盖', async t => {
   const { file } = await temp(t), store = new Store();
   await writeFile(file, 'external');
-  await assert.rejects(commitConfig(file, example, null, store, VALUES), /已变化/);
+  await assert.rejects(commitConfig(file, example, null, store, VALUES), /发生了变化/);
   assert.equal(await readFile(file, 'utf8'), 'external'); assert.equal(store.items.size, 0);
 });
 test('已有写入锁不被移除', async t => {
@@ -194,7 +194,7 @@ test('旧凭据清理失败仍保留成功的新配置', async t => {
   await commitConfig(file, source, before, store, VALUES, { warn: text => warnings.push(text) });
   const saved = JSON.parse(await readFile(file, 'utf8'));
   assert.notEqual(saved.credentials.id, ID); assert.ok(store.read(saved.credentials.id));
-  assert.ok(warnings.join().includes('旧凭据清理失败')); assert.ok(!warnings.join().includes('TEST_ONLY'));
+  assert.ok(warnings.join().includes('旧凭据没有清理掉')); assert.ok(!warnings.join().includes('TEST_ONLY'));
 });
 test('清除凭据必须确认；取消不修改，确认移除引用及条目', async t => {
   const { file } = await temp(t), store = new Store(), source = data();
@@ -203,7 +203,7 @@ test('清除凭据必须确认；取消不修改，确认移除引用及条目',
   assert.equal(await clearCredentials(file, prompts(['y']), store), true);
   assert.equal(JSON.parse(await readFile(file, 'utf8')).credentials, undefined); assert.equal(store.read(ID), null);
 });
-test('清除命令不删除 Python 凭据', async t => {
+test('清除命令不删除旧版原型凭据', async t => {
   const { file } = await temp(t), source = data(); source.credentials.backend = 'system';
   await writeFile(file, JSON.stringify(source));
   await assert.rejects(clearCredentials(file, prompts([]), new Store()), /跨实现删除/);
@@ -212,7 +212,7 @@ test('非交互隐藏输入直接拒绝，CLI 禁止跳过凭据写入确认', a
   await assert.rejects(readHidden('不要回显'), /隐藏输入/);
   const { root } = await temp(t), output = [];
   assert.equal(await main(['setup', '--yes'], { env: { DEV_NOTIFY_HOME: root }, out: t => output.push(t), err: t => output.push(t) }), 2);
-  assert.ok(output.join().includes('不能跳过'));
+  assert.ok(output.join().includes('仍然需要确认'));
 });
 test('Ctrl+C 取消向导返回 130', async t => {
   const { root } = await temp(t);
@@ -254,7 +254,7 @@ test('隐藏输入 Ctrl+C 取消不回显且清理监听器', async t => {
 test('不能启用 raw mode 时立即失败，不读取回显秘密', async t => {
   const terminal = fakeTerminal(t);
   terminal.input.setRawMode = () => { throw new Error('raw mode unavailable'); };
-  await assert.rejects(readHidden('密钥：', terminal.input, terminal.output), /隐藏输入失败/);
+  await assert.rejects(readHidden('密钥：', terminal.input, terminal.output), /隐藏输入没有完成/);
   assert.equal(terminal.input.listenerCount('keypress'), 0);
   assert.ok(!terminal.written().includes('密钥：'));
 });

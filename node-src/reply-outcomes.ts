@@ -22,7 +22,7 @@ export function endSessionInteractions(state: ReplyState, session: string, reaso
   for (const call of Object.values(state.calls)) if (call.session === session) call.ended = true;
   for (const value of Object.values(state.requests)) if (value.session === session && !value.result) finishInteraction(value, {
     kind: value.claimed ? 'unknown' : 'not-applied',
-    text: value.claimed ? reason + '；没有收到本次答案的生效确认，请检查终端。不会重复提交。' : reason + '；本次远程答案未回传。',
+    text: value.claimed ? reason + '；还没有收到本次答案的生效确认，请检查终端。' : reason + '；这次远程答案没有回传。',
   });
 }
 export async function registerToolCall(access: ReplyAccess, target: SessionTarget, data: any): Promise<void> {
@@ -71,21 +71,21 @@ export async function completeToolCall(access: ReplyAccess, data: any): Promise<
         const q = value.questions.find(q => q.question === receipt.question);
         const exists = valid && answered && receipt.question !== undefined && Object.hasOwn(answers, receipt.question)
           && !output.annotations?.[receipt.question]?.unanswered;
-        receipt.result = !value.claimed ? { kind: 'not-applied', text: '本机或其他应答端已先处理；本次 Telegram 答案未回传。' }
-          : !valid ? { kind: 'unknown', text: 'Claude 已结束问题，但未提供可核实的答案结果。请检查终端；不会重复提交。' }
+        receipt.result = !value.claimed ? { kind: 'not-applied', text: '本机或其他端已经先处理了，这次 Telegram 答案没有提交。' }
+          : !valid ? { kind: 'unknown', text: 'Claude 已经结束了这个问题，但没有返回可核实的结果。请检查终端。' }
           : exists && sameAnswer(answers[receipt.question!], receipt.answer, q?.multiSelect === true && receipt.custom !== true && q.options.every(o => !o.label.includes(',')))
-            ? { kind: 'applied', text: 'Claude 已确认采用与你提交内容一致的答案。若本机同时提交了相同内容，无法仅凭结果区分来源。' }
-            : { kind: 'not-applied', text: 'Claude 已结束问题，但没有采用你提交的答案；本机或其他应答端可能已先处理。' };
+            ? { kind: 'applied', text: 'Claude 已确认采用了与你提交内容一致的答案。如果本机也提交了相同内容，这次结果无法说明是哪一方生效。' }
+            : { kind: 'not-applied', text: 'Claude 已经结束问题，但没有采用你提交的答案；本机或其他端可能已经先处理。' };
       }
       finishInteraction(value, { kind: 'not-applied', text: '问题已处理，旧按钮已失效。' });
     } else if (data.hook_event_name === 'PostToolUse' && value.kind === 'permission') {
       const allow = value.claimed && value.receipts?.some(r => r.answer === 'allow');
       finishInteraction(value, allow
-        ? { kind: 'applied', text: '已确认该工具获准并执行完成；无法仅凭完成事件区分是否由本机同时批准。' }
-        : { kind: 'not-applied', text: '该工具已获准执行；本次远程决定未阻止执行。' });
+        ? { kind: 'applied', text: '工具已获准并执行完成。如果本机同时也批准了，完成事件本身无法说明是哪一方放行。' }
+        : { kind: 'not-applied', text: '工具已经获准执行，这次远程决定没有阻止执行。' });
     } else finishInteraction(value, { kind: value.claimed ? 'unknown' : 'not-applied', text: value.claimed
-      ? '工具失败、拒绝或取消；此事件不能确认远程决定是否被采用。请检查终端，不会重复提交。'
-      : '请求已失败、拒绝或取消，本次远程决定未回传。' });
+      ? '工具执行失败、被拒绝或取消。这个事件无法说明远程决定是否生效，请检查终端。'
+      : '请求失败、被拒绝或取消，这次远程决定没有回传。' });
   });
 }
 export async function drainInteractionFeedback(access: ReplyAccess, api: TelegramApi,
@@ -97,8 +97,8 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
       const target = state.sessions[value.session];
       if (!value.result && (!target || targetEpoch(target) !== value.epoch || value.expires <= Date.now())) finishInteraction(value, {
         kind: value.claimed ? 'unknown' : 'not-applied', text: value.claimed
-          ? '等待生效确认超时或会话已切换；结果未知，请检查终端。不会自动重复提交。'
-          : '交互已过期或会话已结束；远程答案未回传，本机仍可按实际界面处理。',
+          ? '等待生效确认超时，或会话已经切换。结果暂时未知，请检查终端。'
+          : '交互已过期或会话已结束；远程答案没有回传，你仍可在本机界面继续处理。',
       });
     }
     return Object.values(state.requests).filter(value => value.result || value.receipts?.some(r => r.result));
@@ -118,7 +118,7 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
       try {
         const title = receipt.result.kind === 'applied' ? '✅ 答案内容已生效' : receipt.result.kind === 'not-applied' ? '⚠️ 本次提交未生效' : '⚠️ 提交结果暂时无法确认';
         await replyHint(api, receipt.chat, title, receipt.result.text + '\n请求：' + value.id.slice(0, 8));
-      } catch { delivery = 'unknown'; log('Telegram 交互结果反馈发送失败或结果未知；不自动重发，不影响已采用的答案。'); }
+      } catch { delivery = 'unknown'; log('Telegram 结果反馈没有发送成功。不会自动重发，已经采用的答案不受影响。'); }
       await stateTransaction(access, state => {
         const actual = state.requests[value.id]?.receipts?.find(r => r.id === receipt.id);
         if (actual) actual.delivery = delivery;
@@ -137,7 +137,7 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
       const label = value.result.kind === 'unknown' ? '已关闭 · 结果待核实' : value.result.text.includes('过期') ? '已过期 · 不再接受答案' : '已处理 · 不再接受答案';
       await api('editMessageReplyMarkup', { chat_id: message.chat, message_id: message.message,
         reply_markup: { inline_keyboard: [[{ text: label, callback_data: `dn:q:${value.id}:0:l` }]] } })
-        .catch(() => log('Telegram 旧按钮移除失败；服务端状态仍拒绝该请求。'));
+        .catch(() => log('Telegram 旧按钮没有移除成功。服务端仍会拒绝这个请求。'));
     }
   }
 }

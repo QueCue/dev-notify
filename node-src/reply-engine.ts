@@ -27,12 +27,18 @@ export async function resolveEntry(access: ReplyAccess, key: string, context: En
   if (!resolved || !await (context.validate ?? (target => validateTarget(target)))(resolved.target)) return null;
   return resolved;
 }
-async function prompt(access: ReplyAccess, chat: string, messageId: number, key: string, context: EngineContext): Promise<void> {
+// autoReply：Telegram 内联按钮沿用 force_reply，点击后自动进入回复状态。
+// 飞书跳转使用普通提示 + remove_keyboard：清除客户端缓存的旧强制回复目标，但不拉起新的回复框。
+async function prompt(access: ReplyAccess, chat: string, messageId: number, key: string, context: EngineContext, autoReply = true): Promise<void> {
   const resolved = await resolveEntry(access, key, context);
-  if (!resolved) { await replyHint(context.api, chat, '⚠️ 无法回复', '该会话已关闭、切换或通知过期，请从最新通知进入。', messageId); return; }
+  if (!resolved) { await replyHint(context.api, chat, '⚠️ 无法回复', '这个会话已经关闭、切换，或这条通知已过期。请从最新通知进入。', messageId); return; }
   if (resolved.entry.request) { await showInteraction(access, resolved.entry.request, chat, context.api); return; }
-  const sent = await replyHint(context.api, chat, '💬 回复 Claude', '请回复此消息输入内容。该输入将提交到对应本机会话。\n会话：' + (resolved.target.title || resolved.target.session),
-    messageId, { force_reply: true, selective: true });
+  const session = resolved.target.title || resolved.target.session;
+  const sent = autoReply
+    ? await replyHint(context.api, chat, '💬 回复 Claude', '请回复此消息输入内容。该输入将提交到对应本机会话。\n会话：' + session,
+      messageId, { force_reply: true, selective: true })
+    : await replyHint(context.api, chat, '💬 回复 Claude', '请长按这条消息并选择「回复」，然后输入内容。该输入将提交到对应本机会话。\n会话：' + session,
+      messageId, { remove_keyboard: true });
   if (Number.isSafeInteger(sent?.message_id)) await stateTransaction(access, state => { state.entries[`tg:${chat}:${sent.message_id}`] = resolved.entry; });
 }
 export async function processUpdate(access: ReplyAccess, update: any, context: EngineContext): Promise<void> {
@@ -44,10 +50,10 @@ export async function processUpdate(access: ReplyAccess, update: any, context: E
     const current = await context.fresh().catch(() => null);
     if (chat && current?.identity === access.identity && current.policy.users.includes(chat)) {
       if (typeof update?.callback_query?.id === 'string') await context.api('answerCallbackQuery', {
-        callback_query_id: update.callback_query.id, text: '处理失败或结果未知，请检查终端；不会自动重复提交',
+        callback_query_id: update.callback_query.id, text: '处理没有完成，请检查终端；不会自动重复提交。',
       }).catch(() => {});
-      await replyHint(context.api, chat, '⚠️ 本次提交结果无法确认',
-        '处理发生异常，无法确认是否已登记或采用。请检查终端及后续结果反馈；不会自动重复提交。').catch(() => {});
+      await replyHint(context.api, chat, '⚠️ 本次提交没有完成',
+        '处理时出现了异常，这次提交可能已经登记，也可能没有生效。请检查终端和后续结果；不会自动重复提交。').catch(() => {});
     }
     throw error;
   }
@@ -69,8 +75,8 @@ async function processAuthorizedUpdate(access: ReplyAccess, update: any, context
     if (typeof value === 'string' && value.startsWith('dn:q:')) {
       const id = value.split(':')[2];
       if (!/^[a-f0-9]{32}$/.test(id) || !await resolveEntry(access, 'token:' + id, context)) {
-        await context.api('answerCallbackQuery', { callback_query_id: callback.id, text: '会话已关闭或交互已失效' }).catch(() => {});
-        await replyHint(context.api, chat, '⚠️ 本次提交未生效', '会话已关闭、切换或交互已失效；未回传答案。').catch(() => {}); return;
+        await context.api('answerCallbackQuery', { callback_query_id: callback.id, text: '会话已关闭，或这次交互已经失效。' }).catch(() => {});
+        await replyHint(context.api, chat, '⚠️ 这次提交没有生效', '会话已经关闭、切换，或交互已经失效，答案没有回传。').catch(() => {}); return;
       }
       if (await handleInteractionCallback(access, callback, chat, context.api)) return;
     }
@@ -85,31 +91,32 @@ async function processAuthorizedUpdate(access: ReplyAccess, update: any, context
   if (text === '/chatid') { await replyHint(context.api, chat, 'Telegram chat_id', chat, message.message_id); return; }
   if (!current.policy.users.includes(chat)) return;
   if (typeof message.date === 'number' && Date.now() / 1000 - message.date > 300) {
-    await replyHint(context.api, chat, '⚠️ 本次提交未生效', '这条输入消息已超过有效时间，未回传；请查看最新问题或终端状态。'); return;
+    await replyHint(context.api, chat, '⚠️ 本次提交没有生效', '这条消息已经超过有效时间，答案没有回传。请查看最新问题或终端状态。'); return;
   }
   if (/^\/start\s+[a-f0-9]{32}$/.test(text)) {
-    await prompt(access, chat, message.message_id, 'token:' + text.split(/\s+/)[1], context); return;
+    // 飞书跳转：只发普通提示并清除旧键盘状态，不自动进入回复。
+    await prompt(access, chat, message.message_id, 'token:' + text.split(/\s+/)[1], context, false); return;
   }
   const replyTo = message.reply_to_message?.message_id;
   if (!Number.isSafeInteger(replyTo)) {
     await replyHint(context.api, chat, '💬 回复方式', '请直接回复任务完成通知，或点击通知里的「回复 Claude」按钮。', message.message_id); return;
   }
   const resolved = await resolveEntry(access, `tg:${chat}:${replyTo}`, context);
-  if (!resolved) { await replyHint(context.api, chat, '⚠️ 无法回复', '通知已过期或对应会话已关闭、切换，请从最新通知回复。', message.message_id); return; }
+  if (!resolved) { await replyHint(context.api, chat, '⚠️ 无法回复', '通知已过期，或对应会话已经关闭、切换。请从最新通知回复。', message.message_id); return; }
   if (resolved.entry.request) { await handleInteractionText(access, resolved.entry.request, chat, message, context.api); return; }
   let safe;
   try { safe = sanitizeReply(message.text); }
-  catch (error) { await replyHint(context.api, chat, '❌ 未提交回复', error instanceof ConfigError ? error.message : '输入无效', message.message_id); return; }
+  catch (error) { await replyHint(context.api, chat, '❌ 回复没有提交', error instanceof ConfigError ? error.message : '输入无效。', message.message_id); return; }
   const id = randomBytes(16).toString('hex');
   const queued = await stateTransaction(access, state => {
     const target = state.sessions[resolved.target.session];
-    if (!target || sessionEpoch(target) !== resolved.entry.epoch) throw new ConfigError('会话已变化，未提交');
+    if (!target || sessionEpoch(target) !== resolved.entry.epoch) throw new ConfigError('会话已经变化，这次回复没有提交。');
     if (state.pending[target.session] && Date.now() - state.pending[target.session].updated < 5 * 60 * 1000) return null;
     state.pending[target.session] = { hash: textHash(safe), text: safe, epoch: resolved.entry.epoch, id, updated: Date.now(), queued: target.working,
       phase: 'queued', chat, message: message.message_id };
     return target.working;
   });
-  if (queued === null) { await replyHint(context.api, chat, '⏳ 未提交新回复', '该会话已有未确认回复，请等待收到确认或检查本机终端后再试。', message.message_id); return; }
+  if (queued === null) { await replyHint(context.api, chat, '⏳ 新回复没有提交', '这个会话已有一条待确认的回复。请先等待确认，或检查本机终端后再试。', message.message_id); return; }
   if (queued) await replyHint(context.api, chat, '⏳ 回复已排队', 'Claude 正在处理当前任务；本地队列将在本轮结束后尝试提交，不会把文本输入到正在等待权限的弹窗。', message.message_id);
   else await drainReplies(access, context);
 }
@@ -123,8 +130,8 @@ export async function drainReplies(access: ReplyAccess, context: EngineContext):
     try {
       const current = await context.fresh();
       if (!current || current.identity !== access.identity || !current.policy.users.includes(pending.chat)) return;
-      if (Date.now() - pending.updated > 5 * 60 * 1000) throw new ConfigError('排队回复已超过 5 分钟，未提交；请检查本机后重新回复');
-      if (!target.tracked || pending.epoch !== sessionEpoch(target) || !await (context.validate ?? (value => validateTarget(value)))(target)) throw new ConfigError('会话已关闭或切换，未提交');
+      if (Date.now() - pending.updated > 5 * 60 * 1000) throw new ConfigError('排队的回复已超过 5 分钟，没有提交。请检查本机后重新回复。');
+      if (!target.tracked || pending.epoch !== sessionEpoch(target) || !await (context.validate ?? (value => validateTarget(value)))(target)) throw new ConfigError('会话已经关闭或切换，这次回复没有提交。');
       const text = pending.text;
       const claimed = await stateTransaction(access, state => {
         const actual = state.pending[target.session], active = state.sessions[target.session];
@@ -136,13 +143,13 @@ export async function drainReplies(access: ReplyAccess, context: EngineContext):
       const final = await context.fresh();
       if (!final || final.identity !== access.identity) return;
       await (context.inject ?? ((value, content) => injectReply(value, content)))(target, text);
-      await replyHint(context.api, pending.chat, '✅ 已转发给 Claude', '终端输入已提交，等待 UserPromptSubmit 确认；这不等于 Claude 已开始处理。', pending.message);
+      await replyHint(context.api, pending.chat, '✅ 已转发给 Claude', '终端输入已提交，正在等待 UserPromptSubmit 确认。', pending.message);
     } catch (error) {
       await stateTransaction(access, state => {
         const value = state.pending[target.session];
         if (value?.id === pending.id) { value.phase = 'unknown'; delete value.text; }
       });
-      await replyHint(context.api, pending.chat, '⚠️ 转发未确认', error instanceof ConfigError ? error.message : '提交失败或结果未知，请检查本机终端；不会自动重复提交。', pending.message).catch(() => {});
+      await replyHint(context.api, pending.chat, '⚠️ 转发状态待确认', error instanceof ConfigError ? error.message : '提交没有完成，请检查本机终端；不会自动重复提交。', pending.message).catch(() => {});
     }
   }
 }

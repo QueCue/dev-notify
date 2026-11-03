@@ -36,7 +36,7 @@ export async function stopBridge(file: string): Promise<boolean> {
 }
 export async function startBridge(file: string, env: Env = process.env): Promise<boolean> {
   const access = await accessReplies(file, env);
-  if (!access) throw new ConfigError('远程回复未授权，请先运行 reply setup');
+  if (!access) throw new ConfigError('远程回复尚未授权，请先运行 reply setup。');
   const existing = await bridgeStatus(file);
   if (existing.running) return existing.ready;
   const node = await realpath(process.execPath), cli = await realpath(fileURLToPath(new URL('./cli.js', import.meta.url)));
@@ -67,7 +67,7 @@ export interface BridgeOptions {
 export async function runBridge(file: string, options: BridgeOptions = {}): Promise<void> {
   const env = options.env ?? process.env;
   let access = await accessReplies(file, env);
-  if (!access) throw new ConfigError('远程回复未授权');
+  if (!access) throw new ConfigError('远程回复尚未授权。');
   const directory = replyDirectory(file);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const botDirectory = path.join(appPaths(process.platform, env).data, 'reply-bots');
@@ -75,7 +75,7 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
   const lockPath = path.join(botDirectory, access.policy.bot + '.lock');
   let lock;
   try { lock = await open(lockPath, 'wx', 0o600); }
-  catch { throw new ConfigError('本用户已有相同 Bot 桥接或残留锁；不会并发轮询。确认进程退出后再处理 reply-bots 中对应锁'); }
+  catch { throw new ConfigError('当前用户已经有同一个 Bot 的桥接在运行，或残留了锁文件。请确认进程退出后，再处理 reply-bots 中对应的锁。'); }
   const owner = randomBytes(16).toString('hex'), lease: Lease = { pid: process.pid, owner, ready: false, updated: Date.now() };
   let stopping = false;
   const stop = () => { stopping = true; };
@@ -89,7 +89,7 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
     await atomicJson(leasePath(file), lease);
     let api = (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
     const webhook = await api('getWebhookInfo', {});
-    if (webhook?.url) throw new ConfigError('Bot 已设置 webhook，不能同时使用 getUpdates；不会自动删除 webhook');
+    if (webhook?.url) throw new ConfigError('这个 Bot 已经设置了 webhook，不能同时使用 getUpdates。请先移除 webhook；本工具不会自动删除。');
     await api('getMe', {});
     const currentState = await stateTransaction(access, state => ({ offset: state.offset, empty: Object.keys(state.entries).length === 0 }));
     if (!currentState.offset && currentState.empty) {
@@ -118,26 +118,26 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
       try { updates = await api('getUpdates', { offset, timeout: 2, allowed_updates: ['message', 'callback_query'] }); }
       catch (error) {
         if (error instanceof ConfigError && /冲突/.test(error.message)) throw error;
-        log('Telegram 轮询失败；秘密和服务端正文未记录。');
-        if (++failures >= 5) throw new ConfigError('Telegram 连续轮询失败 5 次，桥接已退出；请检查网络、Token 或 API 冲突后重新启动');
+        log('Telegram 轮询失败；日志中没有记录密钥或服务端正文。');
+        if (++failures >= 5) throw new ConfigError('Telegram 连续轮询失败 5 次，桥接已经退出。请检查网络、Token 或 API 冲突后重新启动。');
         lease.updated = Date.now(); await atomicJson(leasePath(file), lease);
         await (options.sleep ?? delay)(3000); continue;
       }
       failures = 0;
       const after = await fresh();
       if (!after || after.identity !== access.identity || await isStopped()) break;
-      if (!Array.isArray(updates)) throw new ConfigError('Telegram 更新格式无效');
+      if (!Array.isArray(updates)) throw new ConfigError('Telegram 更新格式无效。');
       for (const update of updates) {
         if (await isStopped()) break;
         try { await processUpdate(access, update, context); }
-        catch { log('回复处理失败；更新不重放，请检查终端或从最新通知重试。'); }
+        catch { log('回复处理失败。这条更新不会重放；请检查终端，或从最新通知重试。'); }
       }
       if (updates.length) lastActivity = Date.now();
       lease.updated = Date.now(); await atomicJson(leasePath(file), lease);
       if (Date.now() - lastActivity > 24 * 60 * 60 * 1000) break;
     }
   } catch (error) {
-    lease.ready = false; lease.error = error instanceof ConfigError ? error.message : '桥接启动或运行失败，未输出底层错误';
+    lease.ready = false; lease.error = error instanceof ConfigError ? error.message : '桥接启动或运行失败；为避免泄露密钥，没有显示底层错误。';
     await atomicJson(leasePath(file), lease).catch(() => {});
     throw error;
   } finally {

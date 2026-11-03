@@ -1,15 +1,13 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-build/
+# Node 构建输出
 dist/
-*.egg-info/
-.pytest_cache/
-.coverage
+build/
+
+# 环境变量
 .env
 .env.*
 !.env.example
+
+# 本地配置与状态
 config.json
 config.local.json
 notify.local.json
@@ -21,10 +19,15 @@ credentials/
 .config-*.tmp
 *.dev-notify.lock
 .dev-notify-*.tmp
+
+# 系统文件
 .DS_Store
 Thumbs.db
+
 node_modules/
 *.tgz
+
+# 回复桥接本地状态
 *.reply.json
 *.reply.json.lock
 *.reply-data/

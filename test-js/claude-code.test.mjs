@@ -88,10 +88,10 @@ test('首次安装写入通知、同步生命周期与交互 exec hooks，参数
   assert.ok(prompts.output.some(text => text.includes('敏感内容')));
   assert.deepEqual(await readdir(ctx.directory), ['settings.json']);
 });
-test('合并保留权限、环境变量、未知设置、原 Python hooks 和其他事件', async t => {
+test('合并保留权限、环境变量、未知设置、原旧版 hooks 和其他事件', async t => {
   const ctx = await temp(t);
   const before = { permissions: { allow: ['Read'], deny: ['Bash(rm *)'] }, env: { KEEP: 'TEST_ONLY' }, future: { enabled: true },
-    hooks: { Stop: [{ hooks: [{ type: 'command', command: 'python old_hook.py', timeout: 600 }] }],
+    hooks: { Stop: [{ hooks: [{ type: 'command', command: 'legacy-hook --old', timeout: 600 }] }],
       Notification: [{ matcher: 'idle_prompt', hooks: [{ type: 'command', command: 'other-tool' }] }],
       SessionStart: [{ hooks: [{ type: 'command', command: 'start-tool' }] }] } };
   await save(ctx.file, before);
@@ -172,13 +172,13 @@ test('现有 disableAllHooks 保留并明确告知，状态不能假报可用', 
   const ctx = await temp(t); await save(ctx.file, { disableAllHooks: true });
   const prompts = ui(['y']); await configureClaudeCode(ctx.config, 'install', prompts, { env: ctx.env });
   assert.equal((await claudeCodeStatus({ env: ctx.env })).disabled, true);
-  assert.ok(prompts.output.some(text => text.includes('仍不会生效')));
+  assert.ok(prompts.output.some(text => text.includes('也不会生效')));
   assert.equal((await invoke(ctx.env, ['integration', 'claude-code', 'status'])).code, 1);
 });
 test('确认期间的外部修改不被覆盖', async t => {
   const ctx = await temp(t); await save(ctx.file, { existing: true });
   const prompts = ui(); prompts.text = async () => { await save(ctx.file, { externallyChanged: true }); return 'y'; };
-  await assert.rejects(configureClaudeCode(ctx.config, 'install', prompts, { env: ctx.env }), /已变化/);
+  await assert.rejects(configureClaudeCode(ctx.config, 'install', prompts, { env: ctx.env }), /变化/);
   assert.deepEqual(JSON.parse(await readFile(ctx.file, 'utf8')), { externallyChanged: true });
   assert.deepEqual(await readdir(ctx.directory), ['settings.json']);
 });
@@ -234,7 +234,7 @@ test('setup --no-test 保存配置并安装 hooks，不发送测试', async t =>
   const prompts = ui(['1', '111', '']); prompts.secret = async () => '123:TEST_ONLY';
   const result = await invoke(ctx.env, ['setup', '--no-test'], { prompts, store: new Store() });
   assert.equal(result.code, 0); assert.equal((await claudeCodeStatus({ env: ctx.env })).stop, 1);
-  assert.match(prompts.output.join('\n'), /未发送测试通知/);
+  assert.match(prompts.output.join('\n'), /已跳过测试通知/);
 });
 test('setup 汇总确认取消时不写配置或 hooks', async t => {
   const ctx = await temp(t); await rm(ctx.config);
@@ -248,7 +248,7 @@ test('setup 渠道已保存但 hooks 安装失败时明确区分结果，不回�
   const ctx = await temp(t); await rm(ctx.config); await save(ctx.file, 'BROKEN');
   const prompts = ui(['1', '111', '']); prompts.secret = async () => '123:TEST_ONLY';
   const result = await invoke(ctx.env, ['setup', '--no-test'], { prompts, store: new Store() });
-  assert.equal(result.code, 1); assert.match(prompts.output.join('\n'), /配置已保存，但 Claude Code hooks 安装未完成/);
+  assert.equal(result.code, 1); assert.match(prompts.output.join('\n'), /配置已保存。Claude Code hooks 没有安装完成/);
   assert.equal(await readFile(ctx.file, 'utf8'), 'BROKEN'); await readFile(ctx.config);
 });
 test('模板模式不询问集成、不创建 Claude Code 设置', async t => {
@@ -286,7 +286,7 @@ test('通知按 sessionId 从会话注册表读取主题名称并忽略损坏文
 test('Stop 缺少或空正文时诚实发送完成提示，不拿旧 transcript 冒充', () => {
   for (const value of [undefined, '', '  ']) {
     const message = claudeHookMessage(json(stop({ last_assistant_message: value, transcript_path: 'DO_NOT_READ' })));
-    assert.match(message.content, /未提供最终正文/);
+    assert.match(message.content, /没有提供最终正文/);
   }
 });
 test('继续中的 Stop、子代理、空闲和认证通知全部忽略', () => {
