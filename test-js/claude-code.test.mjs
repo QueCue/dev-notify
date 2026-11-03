@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
-import { claudeSettingsPath, claudeCodeStatus, configureClaudeCode, offerClaudeCode, HOOK_MARKER, NOTIFICATION_MATCHER, EVENTS } from '../dist/claude-code.js';
+import { claudeSettingsPath, claudeCodeStatus, configureClaudeCode, HOOK_MARKER, NOTIFICATION_MATCHER, EVENTS } from '../dist/claude-code.js';
 import { claudeHookMessage, dispatchClaudeHook, readHookInput, MAX_HOOK_BYTES } from '../dist/claude-hook.js';
 import { Cancelled } from '../dist/prompts.js';
 import { main } from '../dist/cli.js';
@@ -122,11 +122,6 @@ test('安装取消或 Ctrl+C 不创建 Claude Code 设置', async t => {
   await assert.rejects(configureClaudeCode(ctx.config, 'install', ui([new Cancelled()]), { env: ctx.env }), Cancelled);
   await assert.rejects(readFile(ctx.file), { code: 'ENOENT' });
 });
-test('setup 拒绝集成时不读取损坏设置、不删除已有 hooks', async t => {
-  const ctx = await temp(t); await save(ctx.file, 'BROKEN_TEST_ONLY');
-  await offerClaudeCode(ctx.config, ui(['n']), { env: ctx.env });
-  assert.equal(await readFile(ctx.file, 'utf8'), 'BROKEN_TEST_ONLY');
-});
 test('损坏 JSON 与异常 hooks 结构被拒绝，不覆盖或泄漏内容', async t => {
   const ctx = await temp(t);
   for (const value of ['TEST_ONLY', '[]', '{"hooks":[]}', '{"hooks":{"Stop":{}}}', '{"hooks":{"Notification":[{"hooks":false}]}}']) {
@@ -215,26 +210,45 @@ test('无可用渠道不能单独安装，--yes 不能跳过集成确认', async
   assert.equal((await invoke(ctx.env, ['integration', 'list', 'extra'])).code, 2);
   await assert.rejects(readFile(ctx.file), { code: 'ENOENT' });
 });
-test('setup 完整闭环：保存渠道→拒绝测试→同意集成→确认写入', async t => {
+test('setup 一次确认完成保存、测试和 Claude Code 安装', async t => {
   const ctx = await temp(t); await rm(ctx.config);
-  const prompts = ui(['1', '111', 'y', 'n', 'y', 'y', 'n']);
+  const prompts = ui(['1', '111', '']);
   prompts.secret = async () => '123:TEST_ONLY';
-  const result = await invoke(ctx.env, ['setup'], { prompts, store: new Store() });
+  let sent = 0;
+  const result = await invoke(ctx.env, ['setup'], { prompts, store: new Store(),
+    send: async plan => { sent++; return { ok: true, channel: plan.channel, sent: plan.items.length, planned: plan.items.length }; } });
   assert.equal(result.code, 0); assert.equal((await claudeCodeStatus({ env: ctx.env })).stop, 1);
+  assert.equal(sent, 1);
   assert.ok(!JSON.stringify(JSON.parse(await readFile(ctx.config, 'utf8'))).includes('TEST_ONLY'));
 });
-test('setup 保存后取消集成保留渠道保存成功，未动 hooks', async t => {
+test('setup --no-hooks 保存渠道但不创建 Claude Code 设置', async t => {
   const ctx = await temp(t); await rm(ctx.config);
-  const prompts = ui(['1', '111', 'y', 'n', new Cancelled()]); prompts.secret = async () => '123:TEST_ONLY';
-  const result = await invoke(ctx.env, ['setup'], { prompts, store: new Store() });
-  assert.equal(result.code, 0); assert.match(result.text, /渠道配置已保存/);
-  await readFile(ctx.config); await assert.rejects(readFile(ctx.file), { code: 'ENOENT' });
+  const prompts = ui(['1', '111', '']); prompts.secret = async () => '123:TEST_ONLY';
+  const result = await invoke(ctx.env, ['setup', '--no-hooks'], { prompts, store: new Store(),
+    send: async plan => ({ ok: true, channel: plan.channel, sent: plan.items.length, planned: plan.items.length }) });
+  assert.equal(result.code, 0); await readFile(ctx.config);
+  await assert.rejects(readFile(ctx.file), { code: 'ENOENT' });
 });
-test('setup 渠道已保存但集成失败时明确区分结果，不回滚渠道', async t => {
-  const ctx = await temp(t); await rm(ctx.config); await save(ctx.file, 'BROKEN');
-  const prompts = ui(['1', '111', 'y', 'n', 'y']); prompts.secret = async () => '123:TEST_ONLY';
+test('setup --no-test 保存配置并安装 hooks，不发送测试', async t => {
+  const ctx = await temp(t); await rm(ctx.config);
+  const prompts = ui(['1', '111', '']); prompts.secret = async () => '123:TEST_ONLY';
+  const result = await invoke(ctx.env, ['setup', '--no-test'], { prompts, store: new Store() });
+  assert.equal(result.code, 0); assert.equal((await claudeCodeStatus({ env: ctx.env })).stop, 1);
+  assert.match(prompts.output.join('\n'), /未发送测试通知/);
+});
+test('setup 汇总确认取消时不写配置或 hooks', async t => {
+  const ctx = await temp(t); await rm(ctx.config);
+  const prompts = ui(['1', '111', 'n']); prompts.secret = async () => '123:TEST_ONLY';
   const result = await invoke(ctx.env, ['setup'], { prompts, store: new Store() });
-  assert.equal(result.code, 1); assert.match(result.text, /渠道配置已保存，但 Claude Code hook 或回复配置未完成/);
+  assert.equal(result.code, 130);
+  await assert.rejects(readFile(ctx.config), { code: 'ENOENT' });
+  await assert.rejects(readFile(ctx.file), { code: 'ENOENT' });
+});
+test('setup 渠道已保存但 hooks 安装失败时明确区分结果，不回滚渠道', async t => {
+  const ctx = await temp(t); await rm(ctx.config); await save(ctx.file, 'BROKEN');
+  const prompts = ui(['1', '111', '']); prompts.secret = async () => '123:TEST_ONLY';
+  const result = await invoke(ctx.env, ['setup', '--no-test'], { prompts, store: new Store() });
+  assert.equal(result.code, 1); assert.match(prompts.output.join('\n'), /配置已保存，但 Claude Code hooks 安装未完成/);
   assert.equal(await readFile(ctx.file, 'utf8'), 'BROKEN'); await readFile(ctx.config);
 });
 test('模板模式不询问集成、不创建 Claude Code 设置', async t => {

@@ -78,18 +78,18 @@ test('原生后端底层错误被脱敏且半写入失败尝试清理', () => {
   assert.throws(() => new KeyringStore(Entry).create(ID, VALUES), error => !error.message.includes('TEST_ONLY'));
   assert.equal(removed, true);
 });
-test('向导首次保存不把秘密写入 JSON，测试需额外同意', async t => {
+test('向导首次保存不把秘密写入 JSON，默认确认发送测试', async t => {
   const { file } = await temp(t), store = new Store();
-  const ui = prompts(['3', '111,222', 'y', 'n'], Object.values(VALUES));
+  const ui = prompts(['3', '111,222', ''], Object.values(VALUES));
   let sent = false;
   assert.equal(await wizard(file, { store, prompts: ui, env: {}, testSend: async () => { sent = true; return true; } }), true);
   const raw = await readFile(file, 'utf8'), saved = JSON.parse(raw);
   assert.ok(!raw.includes('TEST_ONLY')); assert.ok(!ui.output.join().includes('TEST_ONLY'));
   assert.deepEqual(saved.telegram.chat_ids, ['111', '222']);
-  assert.deepEqual(store.read(saved.credentials.id), VALUES); assert.equal(sent, false);
+  assert.deepEqual(store.read(saved.credentials.id), VALUES); assert.equal(sent, true);
 });
 test('完整向导→系统引用→双渠道模拟发送链路', async t => {
-  const { file } = await temp(t), store = new Store(), ui = prompts(['3', '111', 'y', 'y'], Object.values(VALUES));
+  const { file } = await temp(t), store = new Store(), ui = prompts(['3', '111', ''], Object.values(VALUES));
   let deliveries = 0;
   assert.equal(await wizard(file, { store, prompts: ui, env: {}, testSend: async config => {
     for (const channel of ['telegram', 'feishu']) {
@@ -109,7 +109,7 @@ test('取消保存不写配置或系统条目', async t => {
   assert.equal(store.items.size, 0); assert.deepEqual(await readdir(root), []);
 });
 test('输入错误可重试且敏感内容不回显', async t => {
-  const { file } = await temp(t), store = new Store(), ui = prompts(['1', 'invalid', '111', 'y'], ['WRONG_SECRET', VALUES.telegram_token]);
+  const { file } = await temp(t), store = new Store(), ui = prompts(['1', 'invalid', '111', ''], ['WRONG_SECRET', VALUES.telegram_token]);
   assert.equal(await wizard(file, { store, prompts: ui, env: {} }), true);
   assert.ok(!ui.output.join().includes('WRONG_SECRET'));
 });
@@ -117,7 +117,7 @@ test('更新留空保留，签名可清除，成功后删除旧条目', async t 
   const { file } = await temp(t), store = new Store();
   const original = data(); original.telegram.chat_ids = ['111'];
   await writeFile(file, JSON.stringify(original)); store.create(ID, VALUES);
-  const ui = prompts(['y', '3', '', 'y'], ['', '', '-']);
+  const ui = prompts(['', '', ''], ['', '', '-']);
   assert.equal(await wizard(file, { store, prompts: ui, env: {} }), true);
   const saved = JSON.parse(await readFile(file, 'utf8'));
   assert.notEqual(saved.credentials.id, ID); assert.equal(store.read(ID), null);
@@ -128,7 +128,7 @@ test('Python 引用迁移仅重新输入，不删除旧原型凭据', async t =>
   const { file } = await temp(t), store = new Store();
   const source = data(); source.credentials.backend = 'system';
   await writeFile(file, JSON.stringify(source));
-  const ui = prompts(['y', '1', '111', 'y'], [VALUES.telegram_token]);
+  const ui = prompts(['1', '111', ''], [VALUES.telegram_token]);
   assert.equal(await wizard(file, { store, prompts: ui, env: {} }), true);
   assert.equal(store.deleted.includes(ID), false);
   assert.ok(ui.output.some(line => line.includes('Python 原型旧凭据未删除')));
@@ -136,10 +136,10 @@ test('Python 引用迁移仅重新输入，不删除旧原型凭据', async t =>
 test('缺失旧凭据可明确确认后重配', async t => {
   const { file } = await temp(t), store = new Store();
   await writeFile(file, JSON.stringify(data()));
-  assert.equal(await wizard(file, { store, prompts: prompts(['y', '1', 'y', '111', 'y'], [VALUES.telegram_token]), env: {} }), true);
+  assert.equal(await wizard(file, { store, prompts: prompts(['1', 'y', '111', ''], [VALUES.telegram_token]), env: {} }), true);
 });
 test('保存后测试失败不伪装为保存失败或撤销配置', async t => {
-  const { file } = await temp(t), store = new Store(), ui = prompts(['1', '111', 'y', 'y'], [VALUES.telegram_token]);
+  const { file } = await temp(t), store = new Store(), ui = prompts(['1', '111', ''], [VALUES.telegram_token]);
   assert.equal(await wizard(file, { store, prompts: ui, env: {}, testSend: async () => false }), true);
   assert.ok(ui.output.some(line => line.includes('配置已保存，但测试通知失败')));
   assert.equal(JSON.parse(await readFile(file, 'utf8')).credentials.backend, 'keyring');
@@ -147,7 +147,7 @@ test('保存后测试失败不伪装为保存失败或撤销配置', async t => 
 test('网络测试使用环境覆盖后的最终配置', async t => {
   const { file } = await temp(t), store = new Store();
   let token;
-  await wizard(file, { store, prompts: prompts(['1', '111', 'y', 'y'], [VALUES.telegram_token]),
+  await wizard(file, { store, prompts: prompts(['1', '111', ''], [VALUES.telegram_token]),
     env: { TELEGRAM_BOT_TOKEN: '456:OVERRIDE' }, testSend: async config => { token = config.telegram.token; return true; } });
   assert.equal(token, '456:OVERRIDE');
 });

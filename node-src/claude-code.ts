@@ -17,6 +17,8 @@ export interface IntegrationOptions {
   platform?: NodeJS.Platform;
   runtime?: HookRuntime;
   replace?: typeof rename;
+  /** setup 快速路径已在汇总确认中覆盖 hooks 安装，不再重复询问。 */
+  confirm?: boolean;
 }
 export interface IntegrationStatus {
   file: string;
@@ -160,33 +162,32 @@ export async function configureClaudeCode(config: string, action: 'install' | 'r
   }
   const runtime = options.runtime ?? { node: process.execPath, cli: fileURLToPath(new URL('./cli.js', import.meta.url)) };
   const target = merged(data, action === 'install' ? path.resolve(config) : null, runtime);
-  prompts.out(`Claude Code 用户级设置：${file}`);
+  // setup 快速路径已在汇总确认前展示路径和发送范围，避免保存后重复整段说明。
+  const quiet = options.confirm === false;
+  if (!quiet) prompts.out(`Claude Code 用户级设置：${file}`);
   if (JSON.stringify(data) === JSON.stringify(target)) {
     prompts.out(action === 'install' ? '本工具 hooks 已安装且配置一致，未重复添加。' : '没有本工具标记的 hooks，未修改。');
     return true;
   }
   if (action === 'install') {
-    prompts.out(`通知配置：${path.resolve(config)}`);
-    prompts.out('将为该 Claude Code 配置目录下的所有项目启用：最终回复通知，以及权限等待等需要输入的通知。');
-    prompts.out('最终回复和通知正文可能包含敏感内容，将发送到上述配置实际生效的 Telegram / 飞书目标；环境变量仍可覆盖。');
-    prompts.out('同时安装会话生命周期和结构化问题 hooks；未独立运行 reply setup 授权时不接收远程输入、不启动桥接。');
-    prompts.out('不读取整份会话记录；启用回复后读取会话进程元数据，结构化问题/权限请求会发送相应问题或工具输入。');
-    prompts.out('PreToolUse 只登记身份；PermissionRequest 与普通交互终端原生窗口并行等待，远程 5 分钟有效。安装完成事件用于结果反馈，不默认作答。当前已核对 Claude Code 2.1.316 实现；旧版和特殊宿主需另行验收。');
+    if (!quiet) {
+      prompts.out(`通知配置：${path.resolve(config)}`);
+      prompts.out('将为该 Claude Code 配置目录下的所有项目启用：最终回复通知，以及权限等待等需要输入的通知。');
+      prompts.out('最终回复和通知正文可能包含敏感内容，将发送到上述配置实际生效的 Telegram / 飞书目标；环境变量仍可覆盖。');
+      prompts.out('同时安装会话生命周期和结构化问题 hooks；未独立运行 reply setup 授权时不接收远程输入、不启动桥接。');
+      prompts.out('不读取整份会话记录；启用回复后读取会话进程元数据，结构化问题/权限请求会发送相应问题或工具输入。');
+      prompts.out('PreToolUse 只登记身份；PermissionRequest 与普通交互终端原生窗口并行等待，远程 5 分钟有效。安装完成事件用于结果反馈，不默认作答。当前已核对 Claude Code 2.1.316 实现；旧版和特殊宿主需另行验收。');
+    }
     if (status.others) prompts.out(`保留当前文件中另外 ${status.others} 个相关处理器；可能出现重复通知。`);
     prompts.out('项目级或插件 hooks 也可能同时生效；不会自动迁移或删除原 Python hooks。');
     if (status.disabled) prompts.out('注意：该文件设置了 disableAllHooks，安装后仍不会生效；本工具不擅自解除禁用。');
-  } else prompts.out('只移除本工具标记的通知、生命周期和交互处理器；保留其他设置、hooks、通知配置和系统凭据。如需停止回复桥接，请运行 reply disable / stop。');
-  if (!yes(await prompts.text(action === 'install' ? '确认合并安装 Claude Code 通知 hooks？[y/N] ' : '确认移除本工具的 Claude Code hooks？[y/N] '))) {
+  } else if (!quiet) prompts.out('只移除本工具标记的通知、生命周期和交互处理器；保留其他设置、hooks、通知配置和系统凭据。如需停止回复桥接，请运行 reply disable / stop。');
+  if (options.confirm !== false
+    && !yes(await prompts.text(action === 'install' ? '确认合并安装 Claude Code 通知 hooks？[y/N] ' : '确认移除本工具的 Claude Code hooks？[y/N] '))) {
     prompts.out('已取消，Claude Code 设置未修改。'); return false;
   }
   await commit(file, before, target, prompts, options.replace);
   prompts.out(action === 'install' ? 'Claude Code hooks 已写入。请在 /hooks 中检查并按界面确认；未生效时重启会话。'
     : '本工具的 Claude Code hooks 已移除；请在 /hooks 中检查或重启会话。');
   return true;
-}
-export async function offerClaudeCode(config: string, prompts: Prompts, options: IntegrationOptions = {}): Promise<void> {
-  if (!yes(await prompts.text('是否配置 Claude Code 自动通知？将另行展示用户级设置路径及发送范围。[y/N] '))) {
-    prompts.out('未更改 Claude Code hooks；已有集成保持原样。'); return;
-  }
-  await configureClaudeCode(config, 'install', prompts, options);
 }

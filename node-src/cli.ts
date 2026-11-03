@@ -9,7 +9,7 @@ import { deliver, makePlan, type Channel, type Message } from './channels.js';
 import { wizard, clearCredentials } from './setup.js';
 import { terminalPrompts, readText, Cancelled, type Prompts } from './prompts.js';
 import { CredentialError, type Store } from './credentials.js';
-import { claudeCodeStatus, configureClaudeCode, offerClaudeCode } from './claude-code.js';
+import { claudeCodeStatus, claudeSettingsPath, configureClaudeCode } from './claude-code.js';
 import { dispatchClaudeHook, readHookInput } from './claude-hook.js';
 import { accessReplies, configureReplies, disableReplies } from './reply-state.js';
 import { startBridge, stopBridge, bridgeStatus, runBridge } from './reply-bridge.js';
@@ -21,7 +21,9 @@ const HELP = `dev-notify 0.1.0-alpha.3 — 跨平台开发任务通知
   send --title 标题 [--content 正文 | --content-file 文件 | --stdin]
        [--channel all|telegram|feishu] [--level info|success|warn|error]
        [--footer 辅助信息] [--dry-run]
-  setup                     配置渠道及系统凭据，可选测试与 Claude Code 通知
+  setup [--no-test] [--no-hooks]
+                            配置渠道及系统凭据；默认同时发送测试并安装
+                            Claude Code 通知 hooks，一次确认完成
   setup --template [--yes]   仅创建无密钥模板，不覆盖已有配置、不安装 hooks
   credentials clear         确认后移除当前 Node 凭据引用和条目
   paths                     显示配置路径，不写文件
@@ -72,6 +74,7 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
         title: { type: 'string' }, content: { type: 'string' }, 'content-file': { type: 'string' }, stdin: { type: 'boolean' },
         channel: { type: 'string' }, level: { type: 'string' }, footer: { type: 'string' }, 'dry-run': { type: 'boolean' },
         template: { type: 'boolean' }, yes: { type: 'boolean' },
+        'no-test': { type: 'boolean' }, 'no-hooks': { type: 'boolean' },
       } });
     } catch { throw new ConfigError('参数无效，请使用 --help；不回显可能含秘密的参数'); }
     const { values, positionals } = parsed;
@@ -80,7 +83,7 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
     const [command, action, integrationAction] = positionals;
     const allowed: Record<string, string[]> = {
       send: ['title', 'content', 'content-file', 'stdin', 'channel', 'level', 'footer', 'dry-run'],
-      setup: ['template', 'yes'], paths: [], doctor: [], status: [], integration: [], credentials: [], reply: [],
+      setup: ['template', 'yes', 'no-test', 'no-hooks'], paths: [], doctor: [], status: [], integration: [], credentials: [], reply: [],
     };
     if (!command || !Object.hasOwn(allowed, command) || positionals.length > (command === 'integration' ? 3 : command === 'credentials' || command === 'reply' ? 2 : 1)
       || Object.keys(values).some(key => key !== 'config' && !allowed[command].includes(key))) throw new ConfigError('命令或选项组合无效，请使用 --help');
@@ -150,9 +153,24 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
       if (!values.template) {
         if (values.yes) throw new ConfigError('--yes 只允许与 --template 同时使用，不能跳过密钥保存确认');
         const prompts = context.prompts ?? terminalPrompts();
+        const notes: string[] = [];
+        const test = !values['no-test'];
+        if (test) notes.push('保存后将发送固定内容的测试通知到最终生效的接收目标。');
+        let hooks = !values['no-hooks'];
+        if (hooks) {
+          try {
+            notes.push(`Claude Code 用户级设置：${claudeSettingsPath(context.env)}`);
+            notes.push('将为该设置文件对应的所有项目安装通知 hooks；最终回复正文可能含敏感内容，将发送到配置实际生效的渠道。');
+            notes.push('同时安装会话生命周期和结构化问题 hooks；未运行 reply setup 授权时不接收远程输入。');
+          } catch (error) {
+            hooks = false;
+            context.out(error instanceof ConfigError ? `跳过 Claude Code hooks：${error.message}` : '跳过 Claude Code hooks：无法确定用户级设置路径');
+          }
+        }
+        let integrationFailed = false;
         const saved = await wizard(file, {
-          prompts, store: context.store, env: context.env,
-          testSend: async config => {
+          prompts, store: context.store, env: context.env, notes,
+          testSend: test ? async config => {
             let count = 0, ok = true;
             for (const channel of ['telegram', 'feishu'] as Channel[]) {
               if (!ready(config, channel)) continue;
@@ -163,23 +181,14 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
               ok = ok && result.ok;
             }
             return count > 0 && ok;
-          },
+          } : undefined,
+          afterSave: hooks ? async () => {
+            try { await configureClaudeCode(file, 'install', prompts, { env: context.env, confirm: false }); }
+            catch (error) { integrationFailed = true; throw error; }
+          } : undefined,
         });
         if (!saved) return 130;
-        try {
-          await offerClaudeCode(file, prompts, { env: context.env });
-          const config = await loadConfig(file, true, context.env);
-          if (ready(config, 'telegram') && /^(y|yes)$/i.test(await prompts.text('是否另行配置可信私聊用户回复 Claude？默认关闭。[y/N] '))) {
-            await configureReplies(file, prompts, context.env);
-            context.out('回复授权流程结束；确认 hooks 已安装后可运行 reply start，或由下一次支持的会话事件启动。');
-          }
-        }
-        catch (error) {
-          if (error instanceof Cancelled) { context.out('渠道配置已保存；已取消后续 Claude Code 集成/回复配置。'); return 0; }
-          context.err('渠道配置已保存，但 Claude Code hook 或回复配置未完成；请运行 integration claude-code status / reply status 检查后重试。');
-          return 1;
-        }
-        return 0;
+        return integrationFailed ? 1 : 0;
       }
       context.out(`将创建无密钥模板: ${file}；不会联网或修改 hooks`);
       if (!values.yes && !await context.confirm()) { context.out('已取消，未写入'); return 130; }

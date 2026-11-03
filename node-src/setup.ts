@@ -1,12 +1,13 @@
 import { readFile, mkdir, open, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { ConfigError, decodeUtf8, example, parseConfig, type Config, type Env } from './config.js';
+import { ConfigError, decodeUtf8, example, parseConfig, ready, type Config, type Env } from './config.js';
 import { encodeBundle, nativeStore, type Bundle, type Reference, type Store } from './credentials.js';
 import { terminalPrompts, type Prompts } from './prompts.js';
 
 export type RawConfig = Record<string, any>;
 const yes = (text: string) => /^(y|yes)$/i.test(text.trim());
+const defaultYes = (text: string) => !text.trim() || yes(text);
 export async function snapshot(file: string): Promise<Buffer | null> {
   try { return await readFile(file); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw new ConfigError('无法读取现有配置，未修改'); }
@@ -77,16 +78,24 @@ export interface SetupOptions {
   store?: Store;
   env?: Env;
   testSend?: (config: Config) => Promise<boolean>;
+  /** 在唯一一次确认前展示的安装范围说明。 */
+  notes?: string[];
+  /** 确认后执行的附加安装（如 Claude Code hooks）；失败不影响已保存的配置。 */
+  afterSave?: () => Promise<void>;
 }
 export async function wizard(file: string, options: SetupOptions = {}): Promise<boolean> {
   const prompts = options.prompts ?? terminalPrompts();
   const before = await snapshot(file), data = readRaw(before);
   const { out } = prompts;
   out(`配置路径：${file}`);
-  out('密钥隐藏输入并存入 Windows Credential Manager / macOS Keychain；JSON 只保存引用。');
-  out('本步骤仅配置渠道；保存后可另行确认启用 Claude Code 通知，不启用远程控制。只有额外同意测试时才发送测试消息。');
-  if (before && !yes(await prompts.text('已有配置，继续编辑？[y/N] '))) return false;
-  const selection = await prompts.text('选择渠道：1 Telegram，2 飞书，3 两者；其他输入取消：');
+  out('所选渠道的 Token、webhook 和签名密钥均为隐藏输入（不回显），存入 Windows Credential Manager / macOS Keychain；JSON 只保存引用。');
+  const telegramEnabled = data.telegram?.enabled !== false;
+  const feishuEnabled = data.feishu?.enabled !== false;
+  const current = before === null ? ''
+    : telegramEnabled && feishuEnabled ? '3'
+      : telegramEnabled ? '1' : feishuEnabled ? '2' : '';
+  const entered = await prompts.text(`选择渠道：1 Telegram，2 飞书，3 两者${current ? ` [${current}]` : ''}；其他输入取消：`);
+  const selection = entered || current;
   if (!['1', '2', '3'].includes(selection)) return false;
   const store = options.store ?? nativeStore();
   let previous: Bundle = {};
@@ -107,7 +116,8 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
   const readValue = async (label: string, key: keyof Bundle, required: boolean) => {
     while (true) {
       const hint = previous[key] ? '留空保留已存值' : '不从环境变量自动复制';
-      const answer = await prompts.secret(`${label}（${hint}${required ? '' : '；输入 - 清除'}）：`);
+      const optional = required ? '' : '可选；';
+      const answer = await prompts.secret(`${label}（隐藏输入，不回显；${optional}${hint}${required ? '' : '；输入 - 清除'}）：`);
       const value = !required && answer === '-' ? '' : answer || previous[key] || '';
       if (required && !value) { out('此项不能为空，请重试，或 Ctrl+C 取消。'); continue; }
       try {
@@ -133,7 +143,7 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
   }
   if (data.feishu.enabled) {
     values.feishu_webhook = await readValue('飞书 webhook', 'feishu_webhook', true);
-    values.feishu_secret = await readValue('飞书签名密钥（可选）', 'feishu_secret', false);
+    values.feishu_secret = await readValue('飞书签名密钥', 'feishu_secret', false);
   }
   encodeBundle(values);
   const preview = { ...data, credentials: { backend: 'keyring', id: '0'.repeat(32) } };
@@ -146,16 +156,34 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
   if (overrides.length) out('当前存在环境覆盖：' + overrides.join('、'));
   if (reference?.backend === 'keyring') out('保存成功后删除旧凭据；共享旧引用 ID 的配置副本也需更新。');
   out('未选中的渠道会禁用；新条目只保存所选渠道凭据。');
-  if (!yes(await prompts.text('确认保存配置和系统凭据？[y/N] '))) return false;
+  for (const line of options.notes ?? []) out(line);
+  const actions = ['保存配置和系统凭据'];
+  if (options.testSend) actions.push('发送固定内容的测试通知');
+  if (options.afterSave) actions.push('安装 Claude Code 通知 hooks');
+  const extraActions = actions.slice(1);
+  const question = extraActions.length
+    ? `确认${actions[0]}，并${extraActions.join('、')}？[Y/n] ` : `确认${actions[0]}？[Y/n] `;
+  if (!defaultYes(await prompts.text(question))) return false;
   await commitConfig(file, data, before, store, values, { warn: out });
   out('配置和系统凭据已保存。');
-  if (options.testSend && yes(await prompts.text('发送固定内容的测试通知到生效的接收目标？[y/N] '))) {
+  if (options.testSend) {
     try {
       const effective = parseConfig(preview, env, () => values);
       const ok = await options.testSend(effective);
       out(ok ? '测试通知发送成功。' : '配置已保存，但测试通知失败或没有可用渠道；请运行 doctor 检查。');
     } catch { out('配置已保存，但环境覆盖或网络导致测试失败；请运行 doctor 检查。'); }
   } else out('未发送测试通知。');
+  if (options.afterSave) {
+    try { await options.afterSave(); }
+    catch (error) {
+      out(`配置已保存，但 Claude Code hooks 安装未完成：${error instanceof ConfigError ? error.message : '请运行 integration claude-code status 检查'}`);
+    }
+  }
+  try {
+    if (ready(parseConfig(preview, env, () => values), 'telegram')) {
+      out('如需从 Telegram 回复 Claude，请另行运行：dev-notify reply setup');
+    }
+  } catch { /* 环境覆盖无效时上方测试分支已报告。 */ }
   return true;
 }
 export async function clearCredentials(file: string, prompts: Prompts, store?: Store): Promise<boolean> {
