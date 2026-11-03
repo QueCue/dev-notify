@@ -2,7 +2,7 @@
 
 跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code、Unity 或项目目录。
 
-**npm 包名为 `@quecue/dev-notify`。`0.1.0` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
+**npm 包名为 `@quecue/dev-notify`。`0.1.1` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
 
 ## 安装与使用
 
@@ -39,6 +39,16 @@ node dist/cli.js send --title "分段预览" --content-file result.txt --dry-run
 若需要本地安装为 `dev-notify` 命令，在构建后运行 `npm install --global .`，之后可执行 `dev-notify setup`、`dev-notify send ...`。这是本地源码安装，不是从公开 registry 安装；本工程不会自动进行全局安装或发布。
 
 正式包的安装、升级和卸载由 npm 负责。**卸载前建议先清理凭据**：npm 卸载不会自动删除用户凭据。请先交互执行 `dev-notify credentials clear`，再卸载。该命令只删除当前配置引用的 Node 凭据，不会动其他账号、其他配置或旧版原型凭据。
+
+已安装的版本可以用 `update` 升级；它只负责检查版本并调用 npm，不会自己下载或替换文件：
+
+```sh
+dev-notify update           # 检查并在确认后运行 npm install -g
+dev-notify update --check   # 只检查，不安装
+dev-notify update --yes     # 跳过确认（适合脚本）
+```
+
+实际的完整性校验、registry 配置、权限处理和原生依赖解析仍由 npm 完成。更新后请重新运行 `dev-notify integration claude-code install`；如使用远程回复，还需重启桥接。
 
 ## 已提供的功能
 

@@ -14,8 +14,10 @@ import { dispatchClaudeHook, readHookInput } from './claude-hook.js';
 import { accessReplies, configureReplies, disableReplies } from './reply-state.js';
 import { startBridge, stopBridge, bridgeStatus, runBridge } from './reply-bridge.js';
 import type { ReplyHookOptions } from './reply-hooks.js';
+import { updatePackage } from './update.js';
 
-const HELP = `dev-notify 0.1.0 — 跨平台开发任务通知
+export const VERSION = '0.1.1';
+const HELP = `dev-notify ${VERSION} — 跨平台开发任务通知
 
 命令：
   send --title 标题 [--content 正文 | --content-file 文件 | --stdin]
@@ -28,6 +30,7 @@ const HELP = `dev-notify 0.1.0 — 跨平台开发任务通知
   credentials clear         移除当前 Node 凭据引用和条目（需要确认）
   paths                     显示配置路径（不会写入文件）
   doctor / status           离线检查（不会发送消息）
+  update [--check] [--yes]  检查并更新到 npm 最新版本（确认后调用 npm）
   integration list          列出可用集成
   integration claude-code install / status / remove
                             单独安装、查询或移除用户级 hooks
@@ -76,22 +79,28 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
         title: { type: 'string' }, content: { type: 'string' }, 'content-file': { type: 'string' }, stdin: { type: 'boolean' },
         channel: { type: 'string' }, level: { type: 'string' }, footer: { type: 'string' }, 'dry-run': { type: 'boolean' },
         template: { type: 'boolean' }, yes: { type: 'boolean' },
-        'no-test': { type: 'boolean' }, 'no-hooks': { type: 'boolean' },
+        'no-test': { type: 'boolean' }, 'no-hooks': { type: 'boolean' }, check: { type: 'boolean' },
       } });
     } catch { throw new ConfigError('参数无效，请运行 --help 查看用法。'); }
     const { values, positionals } = parsed;
     if (values.help) { context.out(HELP); return 0; }
-    if (values.version) { context.out('dev-notify 0.1.0'); return 0; }
+    if (values.version) { context.out(`dev-notify ${VERSION}`); return 0; }
     const [command, action, integrationAction] = positionals;
     const allowed: Record<string, string[]> = {
       send: ['title', 'content', 'content-file', 'stdin', 'channel', 'level', 'footer', 'dry-run'],
-      setup: ['template', 'yes', 'no-test', 'no-hooks'], paths: [], doctor: [], status: [], integration: [], credentials: [], reply: [],
+      setup: ['template', 'yes', 'no-test', 'no-hooks'], paths: [], doctor: [], status: [], integration: [], credentials: [], reply: [], update: ['check', 'yes'],
     };
     if (!command || !Object.hasOwn(allowed, command) || positionals.length > (command === 'integration' ? 3 : command === 'credentials' || command === 'reply' ? 2 : 1)
       || Object.keys(values).some(key => key !== 'config' && !allowed[command].includes(key))) throw new ConfigError('命令或选项组合不正确，请运行 --help 查看用法。');
     const paths = appPaths(process.platform, context.env);
     const file = values.config ? path.resolve(values.config) : paths.config;
     if (command === 'paths') { context.out(JSON.stringify({ config: file, data: paths.data }, null, 2)); return 0; }
+    if (command === 'update') {
+      return await updatePackage(VERSION, {
+        out: context.out, prompts: context.prompts,
+        check: !!values.check, yes: !!values.yes,
+      });
+    }
     if (command === 'integration') {
       if (action === 'list' && !integrationAction) {
         context.out('claude-code：支持通知、Telegram 回复和结构化问题交互。通知 hooks 与回复权限分开，默认只发送通知，不接收远程输入。'); return 0;
