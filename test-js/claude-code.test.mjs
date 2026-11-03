@@ -78,7 +78,7 @@ test('首次安装写入通知、同步生命周期与交互 exec hooks，参数
   assert.equal(saved.hooks.PreToolUse[0].matcher, undefined);
   assert.equal(saved.hooks.PreToolUse[0].hooks[0].timeout, 10);
   assert.equal(saved.hooks.PostToolUse[0].hooks[0].async, undefined);
-  assert.equal(saved.hooks.PermissionRequest[0].hooks[0].timeout, 360);
+  assert.equal(saved.hooks.PermissionRequest[0].hooks[0].timeout, 720);
   for (const hook of hooks(saved)) {
     assert.equal(hook.command, process.execPath);
     assert.equal(hook.statusMessage, HOOK_MARKER);

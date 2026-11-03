@@ -16,7 +16,8 @@ export interface Entry { session: string; epoch: string; updated: number; reques
 export interface Pending { hash: string; id: string; epoch: string; updated: number; queued: boolean;
   text?: string; chat: string; message: number; phase: 'queued' | 'submitted' | 'unknown' }
 export interface Question { question: string; header: string; multiSelect: boolean; options: { label: string; description: string }[] }
-export interface InteractionResult { kind: 'applied' | 'not-applied' | 'unknown'; text: string }
+export type InteractionEndReason = 'processed' | 'expired' | 'session' | 'switched' | 'closed' | 'failed';
+export interface InteractionResult { kind: 'applied' | 'not-applied' | 'unknown'; text: string; reason?: InteractionEndReason }
 export interface InteractionReceipt {
   id: string; chat: string; message: number; question?: string; answer: string; custom?: boolean;
   result?: InteractionResult; delivery?: 'sending' | 'sent' | 'unknown';

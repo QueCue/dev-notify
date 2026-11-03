@@ -116,7 +116,7 @@ function merged(data: Settings, config: string | null, runtime: HookRuntime): Se
     if (config !== null) {
       const handler = { type: 'command', command: runtime.node,
         args: [runtime.cli, 'integration', 'claude-code', 'hook', '--config', config],
-        ...(event === 'Notification' ? { async: true } : { timeout: event === 'PermissionRequest' ? 360 : event === 'PreToolUse' ? 10 : 120 }), statusMessage: HOOK_MARKER };
+        ...(event === 'Notification' ? { async: true } : { timeout: event === 'PermissionRequest' ? 720 : event === 'PreToolUse' ? 10 : 120 }), statusMessage: HOOK_MARKER };
       const matcher = event === 'Notification' ? NOTIFICATION_MATCHER : null;
       groups.push(matcher ? { matcher, hooks: [handler] } : { hooks: [handler] });
     }
@@ -179,7 +179,7 @@ export async function configureClaudeCode(config: string, action: 'install' | 'r
       prompts.out('最终回复和提醒正文可能包含敏感内容，会发送到配置实际生效的 Telegram / 飞书。环境变量仍然优先。');
       prompts.out('同时安装会话生命周期和结构化问题 hooks。远程输入需要另行运行 reply setup 授权。');
       prompts.out('不会读取整份会话记录。启用回复后，会读取会话的进程元数据；结构化问题或权限请求会发送对应的问题和工具信息。');
-      prompts.out('PreToolUse 只登记调用身份；PermissionRequest 会和本机终端窗口同时等待，远程回答的有效期是 5 分钟。安装完成事件只用于反馈结果，不会代替你作答。已核对 Claude Code 2.1.316；其他版本或宿主环境需要另行验证。');
+      prompts.out('PreToolUse 只登记调用身份；PermissionRequest 会和本机终端窗口同时等待，远程回答的有效期是 10 分钟。安装完成事件只用于反馈结果，不会代替你作答。已核对 Claude Code 2.1.316；其他版本或宿主环境需要另行验证。');
     }
     if (status.others) prompts.out(`当前文件里还有 ${status.others} 个其他相关处理器，可能会重复通知。`);
     prompts.out('项目级或插件的 hooks 也可能同时生效；本工具不会自动迁移或删除旧版 hooks。');

@@ -638,6 +638,15 @@ test('交互超时、撤销或会话切换不默认选择，坏问题不猜选�
   assert.throws(() => questionsFrom({ questions: [{ ...QUESTION, options: [] }] }), /问题结构/);
   assert.equal(ctx.inputs.length, 0);
 });
+test('超时结束的旧按钮显示未作答，不显示为已处理', async t => {
+  const ctx = await temp(t), { request } = await boundQuestion(ctx);
+  await showInteraction(ctx.access, request.id, '111', ctx.api);
+  await waitInteraction(ctx.access, request, ctx.context.fresh, { timeout: 0 });
+  await flushFeedback(ctx);
+  const edit = ctx.calls.find(c => c.method === 'editMessageReplyMarkup');
+  assert.ok(edit);
+  assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].text, '已超时 · 未作答');
+});
 test('结构化 hook 完整路径：展示所有选项→生成控制输出，未授权时完全不联网', async t => {
   const ctx = await temp(t), responses = [];
   const data = { session_id: TARGET.session, tool_use_id: 'question-1', tool_name: 'AskUserQuestion', tool_input: { questions: [QUESTION] } };
