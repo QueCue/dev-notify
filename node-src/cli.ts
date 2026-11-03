@@ -38,6 +38,8 @@ const HELP = `dev-notify 0.1.0-alpha.3 — 跨平台开发任务通知
   reply run                 前台运行桥接（排错用，不启用系统自启动）
 
 全局选项：--config 路径、--help、--version
+环境变量：TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID / TELEGRAM_CHAT_IDS、
+          FEISHU_WEBHOOK、FEISHU_SECRET；显式存在时优先。详见 README。
 系统凭据使用 Windows Credential Manager / macOS Keychain；不调用 Python，不写入明文密钥。`;
 export interface Context {
   env: Env;

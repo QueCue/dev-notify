@@ -16,6 +16,8 @@ dev-notify --version
 dev-notify setup
 ```
 
+也可用环境变量覆盖凭据和接收人：`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`、`FEISHU_WEBHOOK`、`FEISHU_SECRET`；路径变量 `DEV_NOTIFY_HOME`、`CLAUDE_CONFIG_DIR`。显式存在的变量优先，空值也会覆盖；完整规则和自定义变量名见下文「路径、模板和环境变量」。
+
 `0.1.0-alpha.1` 不含 Claude Code hooks；以下回复交互要求 `0.1.0-alpha.3` 或以上。升级后须重新运行 `dev-notify integration claude-code install` 更新完整 hooks，并停止、重新启动已有回复桥接；已有有效授权和通知凭据无需重新配置。使用自定义配置时，继续传入原来的 `--config` 路径。源码开发可在工程目录构建后执行：
 
 ```sh
@@ -68,7 +70,7 @@ node dist/cli.js setup
 6. 确认后默认合并安装 Claude Code 通知 hooks（`--no-hooks` 跳过）。已有集成保持原样，不重复添加。
 7. 远程回复授权不在 setup 中询问；Telegram 可用时提示另行运行 `reply setup`，选择具体可信私聊用户并单独确认。
 
-编辑已有配置不再二次询问是否继续；密钥留空保留已存值，可选签名输入 `-` 清除。未选渠道会禁用，新条目只保留所选渠道的凭据。环境变量仍然优先；向导会提示存在覆盖，测试使用最终生效值，而不是忽略环境的刚输入值。
+编辑已有配置不再二次询问是否继续；密钥留空保留已存值，可选签名输入 `-` 清除。未选渠道会禁用，新条目只保留所选渠道的凭据。环境变量仍然优先（`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`、`FEISHU_WEBHOOK`、`FEISHU_SECRET`），向导会提示存在覆盖，测试使用最终生效值，而不是忽略环境的刚输入值。完整列表见「路径、模板和环境变量」。
 
 自动化使用无密钥模板和 CI secrets：
 
@@ -190,10 +192,19 @@ Python 源码及测试仍在 `src/dev_notify/`、`tests/`、`tools/`，本轮没
 }
 ```
 
-- `TELEGRAM_BOT_TOKEN`：Token。
-- `TELEGRAM_CHAT_ID`、`TELEGRAM_CHAT_IDS`：主接收人和逗号分隔接收人，任一显式存在即完全替换文件名单；显式空名单撤销接收人。大整数 chat_id 必须用字符串。
+### 凭据与接收人
+
+- `TELEGRAM_BOT_TOKEN`：Telegram Bot Token。
+- `TELEGRAM_CHAT_ID`、`TELEGRAM_CHAT_IDS`：主接收人和逗号分隔接收人，任一显式存在即完全替换文件名单；两者同时存在时合并去重。显式空名单撤销接收人。大整数 chat_id 必须用字符串。
 - `FEISHU_WEBHOOK`：飞书中国站 HTTPS 自定义机器人地址。
 - `FEISHU_SECRET`：可选签名密钥。
+- 配置中的 `token_env`、`webhook_env`、`secret_env` 可把上述变量名改成其他合法的环境变量名。
+
+### 路径
+
+- `DEV_NOTIFY_HOME`：绝对路径，配置位于其 `config/config.json`，数据位于其 `data/`。
+- `CLAUDE_CONFIG_DIR`：Claude Code 配置目录的绝对路径，hooks 写入其中的 `settings.json`；未设置时为 `~/.claude`。
+- Windows 还可用 `APPDATA`、`LOCALAPPDATA` 覆盖默认配置/数据根目录；Linux 开发辅助路径可用 `XDG_CONFIG_HOME`、`XDG_STATE_HOME`。
 
 凭据环境变量显式存在时优先，包括空值；不存在才延迟读取系统引用，同次配置加载只读取一次。禁用渠道不会仅为读取系统秘密而打开后端。Token/webhook/secret 不能直接填写进 JSON。
 
