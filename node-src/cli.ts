@@ -18,7 +18,7 @@ import { updatePackage } from './update.js';
 import { postUpdate } from './maintenance.js';
 import { joinList, localeName, parseLocale, resolveLocale, setLocale, t, type Locale } from './i18n.js';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.2.1';
 const helpText = () => t('cli.help', { version: VERSION });
 function rawLang(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -175,7 +175,7 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
         if (status.error) context.err(status.error);
         return access && status.ready ? 0 : 1;
       }
-      if (action === 'run') { await runBridge(file, { env: context.env, log: context.err }); return 0; }
+      if (action === 'run') { await runBridge(file, { env: context.env, lang: values.lang, log: context.err }); return 0; }
       const ready = await startBridge(file, context.env);
       context.out(ready ? t('cli.replyStartReady') : t('cli.replyStartNotReady'));
       return ready ? 0 : 1;

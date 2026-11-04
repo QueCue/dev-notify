@@ -677,6 +677,26 @@ test('桥接真实循环的隔离 API：单例锁、工作流、offset、结束�
   assert.equal((await bridgeStatus(ctx.file)).running, false);
   assert.deepEqual(await readdir(path.join(appPaths(process.platform, ctx.env).data, 'reply-bots')), []);
 });
+test('桥接每轮跟随配置语言，切换后不再混用中英文', async t => {
+  const ctx = await temp(t), polls = [];
+  await atomicJson(ctx.file, { ...CONFIG, language: 'en' });
+  const api = async (method, payload) => {
+    if (method === 'getUpdates') {
+      polls.push(payload);
+      return polls.length === 1 ? [message(1, 'first', { reply_to_message: undefined })]
+        : polls.length === 2 ? [message(2, 'second', { reply_to_message: undefined })] : [];
+    }
+    const result = await ctx.api(method, payload);
+    // 第一轮发送后切换配置；桥接下一轮读取时应立即改用新语言。
+    if (method === 'sendMessage' && polls.length === 1) await atomicJson(ctx.file, { ...CONFIG, language: 'zh' });
+    return result;
+  };
+  await runBridge(ctx.file, { env: ctx.env, api: () => api, maxIterations: 2 });
+  const texts = ctx.calls.filter(call => call.method === 'sendMessage').map(call => call.payload.text);
+  assert.equal(texts.length, 2);
+  assert.match(texts[0], /How to reply/);
+  assert.match(texts[1], /回复方式/);
+});
 test('webhook 与残留 Bot 锁不抢占，停止不会 kill 复用 PID', async t => {
   const ctx = await temp(t);
   await assert.rejects(runBridge(ctx.file, { env: ctx.env, api: () => async () => ({ url: 'FAKE_ONLY' }), maxIterations: 0 }), /webhook/);

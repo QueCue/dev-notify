@@ -2,6 +2,16 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.1 — 2026-11-04
+
+### Fixed
+
+- Fixed mixed Chinese and English Telegram messages after switching the interface language: the reply bridge is a long-running process and previously read the language only once at startup; it now follows the configured language on every polling cycle, so subsequent messages immediately use the new language after `dev-notify language`. An already running bridge must be restarted once (`reply stop` / `reply start`) to load the fix.
+
+### Verification
+
+- Automated regression totals 204 items: 203 passed, 0 failed, and 1 native credential test requiring explicit enablement was skipped.
+
 ## 0.2.0 — 2026-11-04
 
 ### Added

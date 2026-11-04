@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { appPaths, ConfigError, type Env } from './config.js';
-import { t } from './i18n.js';
+import { appPaths, ConfigError, readConfigLanguage, type Env } from './config.js';
+import { resolveLocale, setLocale, t } from './i18n.js';
 import { accessReplies, atomicJson, readJson, replyDirectory, stateTransaction, type ReplyAccess } from './reply-state.js';
 import { telegramApi, type TelegramApi } from './reply-telegram.js';
 import { drainReplies, processUpdate } from './reply-engine.js';
@@ -57,6 +57,7 @@ export async function startBridge(file: string, env: Env = process.env): Promise
 }
 export interface BridgeOptions {
   env?: Env;
+  lang?: string;
   api?: (access: ReplyAccess) => TelegramApi;
   sleep?: (ms: number) => Promise<unknown>;
   stopped?: () => boolean;
@@ -103,6 +104,8 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
     lease.ready = true; lease.updated = Date.now(); await atomicJson(leasePath(file), lease);
     let iteration = 0, failures = 0;
     while (!await isStopped() && iteration++ < (options.maxIterations ?? Infinity)) {
+      // 桥接是长驻进程，语言切换后要跟着配置文件走；否则后续消息会和 hook 进程的语言不一致。
+      setLocale(resolveLocale(options.lang, env, await readConfigLanguage(file)));
       const current = await fresh();
       if (!current) break;
       if (current.identity !== access.identity) {
