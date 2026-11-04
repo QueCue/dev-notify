@@ -2,6 +2,24 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.0 — 2026-11-04
+
+### Added
+
+- `setup` now reads the Telegram bot's recent updates, lists recent chats that have talked to the bot, and supports selecting them with `#1,#3`; it falls back to manual entry when the bridge is running, the bot has a webhook configured, or the network request fails. Only chat_id and name are extracted; message text is never displayed or saved.
+- New `notifications` configuration section: `events.stop` / `events.waiting` control completion notifications and waiting reminders; `projects.allow` / `deny` filter by absolute project path prefixes; `quiet_hours` supports local time and ranges that cross midnight.
+- New `templates.footer` custom footer template with `{project}`, `{topic}`, `{session}`, and `{time}`. `{time}` prefers the timestamp of the last assistant record at the end of the transcript (when Claude Code actually finished) and falls back to the hook trigger time, never the time the notification is sent.
+
+### Improved
+
+- Quiet hours and project filtering suppress only ordinary notifications; they do not start the reply bridge or create reply buttons. Remote question answering, tool permissions, and lifecycle events are unaffected.
+- The transcript is read only when the template contains `{time}`, only up to the last 2 MiB, only under the Claude config directory's `projects` folder, and only to extract the timestamp without reading or sending body text.
+
+### Verification
+
+- Automated regression totals 203 items: 202 passed, 0 failed, and 1 native credential test requiring explicit enablement was skipped.
+- Windows x64 / Node 24 real-machine verification covered the four-line footer template, real Telegram/Feishu notifications, and remote-reply state cleanup.
+
 ## 0.1.5 — 2026-11-04
 
 ### Fixed

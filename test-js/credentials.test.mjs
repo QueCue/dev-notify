@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, readdir, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -88,8 +88,40 @@ test('向导首次保存不把秘密写入 JSON，默认确认发送测试', asy
   assert.deepEqual(saved.telegram.chat_ids, ['111', '222']);
   assert.deepEqual(store.read(saved.credentials.id), VALUES); assert.equal(sent, true);
 });
-test('完整向导→系统引用→双渠道模拟发送链路', async t => {
-  const { file } = await temp(t), store = new Store(), ui = prompts(['3', '111', ''], Object.values(VALUES));
+test('向导自动发现接收人并支持编号选择', async t => {
+  const { file } = await temp(t), store = new Store();
+  const ui = prompts(['1', '#2,#1', ''], [VALUES.telegram_token]);
+  let seenToken;
+  assert.equal(await wizard(file, { store, prompts: ui, env: {}, discover: async token => {
+    seenToken = token;
+    return [{ id: '111', title: 'Alice', kind: 'private' }, { id: '-100123', title: '团队', kind: 'supergroup' }];
+  } }), true);
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.deepEqual(saved.telegram.chat_ids, ['-100123', '111']);
+  assert.equal(seenToken, VALUES.telegram_token);
+  assert.ok(ui.output.some(line => line.includes('#2') && line.includes('团队')));
+  assert.ok(!ui.output.join().includes('TEST_ONLY'));
+});
+test('编号越界后可重试，桥接运行时跳过自动发现', async t => {
+  const { file } = await temp(t), store = new Store();
+  const ui = prompts(['1', '#9', '#1', ''], [VALUES.telegram_token]);
+  assert.equal(await wizard(file, { store, prompts: ui, env: {}, discover: async () => [
+    { id: '111', title: 'Alice', kind: 'private' }] }), true);
+  assert.ok(ui.output.some(line => line.includes('编号超出范围')));
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).telegram.chat_ids, ['111']);
+
+  const running = await temp(t), runStore = new Store();
+  await mkdir(path.join(running.file + '.reply-data'), { recursive: true });
+  await writeFile(path.join(running.file + '.reply-data', 'bridge.json'),
+    JSON.stringify({ pid: process.pid, owner: 'test', ready: true, updated: Date.now() }));
+  let called = false;
+  const runUi = prompts(['1', '222', ''], [VALUES.telegram_token]);
+  assert.equal(await wizard(running.file, { store: runStore, prompts: runUi, env: {},
+    discover: async () => { called = true; return []; } }), true);
+  assert.equal(called, false);
+  assert.ok(runUi.output.some(line => line.includes('桥接正在运行')));
+});
+test('完整向导→系统引用→双渠道模拟发送链路', async t => {  const { file } = await temp(t), store = new Store(), ui = prompts(['3', '111', ''], Object.values(VALUES));
   let deliveries = 0;
   assert.equal(await wizard(file, { store, prompts: ui, env: {}, testSend: async config => {
     for (const channel of ['telegram', 'feishu']) {

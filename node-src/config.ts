@@ -6,14 +6,23 @@ import { getLocale, t, type Locale } from './i18n.js';
 
 export type Env = Record<string, string | undefined>;
 export class ConfigError extends Error {}
+export interface NotificationSettings {
+  events: { stop: boolean; waiting: boolean };
+  projects: { allow: string[]; deny: string[] };
+  quietHours: { start: string; end: string } | null;
+}
+export interface TemplateSettings { footer: string | null }
 export interface Config {
   language: Locale;
+  notifications: NotificationSettings;
+  templates: TemplateSettings;
   telegram: { enabled: boolean; token: string; chatIds: string[] };
   feishu: { enabled: boolean; webhook: string; secret: string };
 }
 export const example = {
   version: 1,
   language: 'zh' as Locale,
+  notifications: { events: { stop: true, waiting: true }, projects: { allow: [] as string[], deny: [] as string[] } },
   telegram: { enabled: true, chat_ids: [], token_env: 'TELEGRAM_BOT_TOKEN' },
   feishu: { enabled: true, webhook_env: 'FEISHU_WEBHOOK', secret_env: 'FEISHU_SECRET' },
 };
@@ -52,9 +61,51 @@ function secret(section: Record<string, unknown>, field: string, fallback: strin
   if (Object.hasOwn(env, name)) return (env[name] ?? '').trim();
   return enabled(section) ? stored().trim() : '';
 }
+function notificationSettings(value: unknown): NotificationSettings {
+  if (value === undefined) return {
+    events: { stop: true, waiting: true }, projects: { allow: [], deny: [] }, quietHours: null };
+  const data = object(value, ['events', 'projects', 'quiet_hours'], 'notifications');
+  const events = data.events === undefined ? {} : object(data.events, ['stop', 'waiting'], 'notifications.events');
+  for (const key of ['stop', 'waiting'] as const)
+    if (events[key] !== undefined && typeof events[key] !== 'boolean') throw new ConfigError(t('config.notificationBoolean'));
+  const projects = data.projects === undefined ? {} : object(data.projects, ['allow', 'deny'], 'notifications.projects');
+  const paths = (key: 'allow' | 'deny'): string[] => {
+    const list = projects[key] ?? [];
+    if (!Array.isArray(list)) throw new ConfigError(t('config.projectPaths'));
+    return [...new Set(list.map(item => {
+      if (typeof item !== 'string' || !item.trim() || !path.isAbsolute(item.trim()))
+        throw new ConfigError(t('config.projectPathAbsolute'));
+      return item.trim();
+    }))];
+  };
+  let quietHours: { start: string; end: string } | null = null;
+  if (data.quiet_hours !== undefined && data.quiet_hours !== null) {
+    const quiet = object(data.quiet_hours, ['start', 'end'], 'notifications.quiet_hours');
+    const time = (key: 'start' | 'end'): string => {
+      const entry = quiet[key];
+      if (typeof entry !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(entry)) throw new ConfigError(t('config.quietFormat'));
+      return entry;
+    };
+    const start = time('start'), end = time('end');
+    // 起止相同表示不启用静默，避免误配成全天免打扰。
+    if (start !== end) quietHours = { start, end };
+  }
+  return { events: { stop: events.stop !== false, waiting: events.waiting !== false },
+    projects: { allow: paths('allow'), deny: paths('deny') }, quietHours };
+}
+function templateSettings(value: unknown): TemplateSettings {
+  if (value === undefined) return { footer: null };
+  const data = object(value, ['footer'], 'templates');
+  if (data.footer === undefined || data.footer === null) return { footer: null };
+  if (typeof data.footer !== 'string') throw new ConfigError(t('config.templateString'));
+  if (Array.from(data.footer).length > 1000) throw new ConfigError(t('config.templateTooLong'));
+  // 允许换行和制表符，拒绝其余控制字符。
+  if (/[\x00-\x08\x0b-\x1f\x7f]/.test(data.footer)) throw new ConfigError(t('config.templateControl'));
+  return { footer: data.footer };
+}
 export function parseConfig(input: unknown, env: Env = process.env,
   resolver: (reference: Reference) => Bundle = resolveReference): Config {
-  const data = object(input, ['version', 'language', 'telegram', 'feishu', 'credentials'], t('config.rootName'));
+  const data = object(input, ['version', 'language', 'notifications', 'templates', 'telegram', 'feishu', 'credentials'], t('config.rootName'));
   if ((data.version ?? 1) !== 1) throw new ConfigError(t('config.unsupportedVersion'));
   const language = data.language ?? 'zh';
   if (language !== 'zh' && language !== 'en') throw new ConfigError(t('config.invalidLanguage'));
@@ -95,7 +146,8 @@ export function parseConfig(input: unknown, env: Env = process.env,
     } catch { /* 不输出含秘密的 URL 异常。 */ }
     if (!valid) throw new ConfigError(t('config.feishuWebhook'));
   }
-  return { language, telegram: { enabled: tgEnabled, token, chatIds }, feishu: { enabled: fsEnabled, webhook,
+  return { language, notifications: notificationSettings(data.notifications), templates: templateSettings(data.templates),
+    telegram: { enabled: tgEnabled, token, chatIds }, feishu: { enabled: fsEnabled, webhook,
     secret: secret(fs, 'secret_env', 'FEISHU_SECRET', env, () => stored('feishu_secret')) } };
 }
 export function ready(config: Config, channel: 'telegram' | 'feishu'): boolean {

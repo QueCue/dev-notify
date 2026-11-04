@@ -2,6 +2,24 @@
 
 简体中文 | [English](CHANGELOG.en.md)
 
+## 0.2.0 — 2026-11-04
+
+### 新增
+
+- `setup` 自动读取 Telegram Bot 最近的更新，列出最近与 Bot 对话的会话并支持 `#1,#3` 选择；桥接正在运行、Bot 配置了 webhook 或网络失败时回退手动填写。只提取 chat_id 和名称，不显示或保存消息正文。
+- 新增 `notifications` 配置段：`events.stop` / `events.waiting` 分别控制完成通知和等待提醒；`projects.allow` / `deny` 按项目绝对路径前缀过滤；`quiet_hours` 支持本机本地时间和跨午夜静默。
+- 新增 `templates.footer` 自定义通知底部模板，支持 `{project}`、`{topic}`、`{session}`、`{time}`。`{time}` 优先使用 transcript 尾部最后一条 assistant 记录的时间（Claude Code 实际结束时间），读取不到时回退 hook 触发时间，不是发送时间。
+
+### 改进
+
+- 静默或项目过滤只抑制普通通知，不会启动回复桥接或生成回复按钮；远程答题、工具权限处理和生命周期事件不受影响。
+- 仅在模板包含 `{time}` 时读取 transcript 尾部最多 2 MiB，路径限制在 Claude 配置目录的 `projects` 下，只提取时间戳，不读取或发送正文。
+
+### 验证
+
+- 自动化回归共 203 项：202 通过、0 失败、1 项需要显式启用的原生凭据测试跳过。
+- Windows x64 / Node 24 实机完成四行 footer 模板、真实 Telegram/飞书通知与远程回复状态清理验证。
+
 ## 0.1.5 — 2026-11-04
 
 ### 修复

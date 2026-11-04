@@ -1,8 +1,11 @@
 import type { Readable } from 'node:stream';
+import path from 'node:path';
 import { ConfigError, decodeUtf8, loadConfig, ready, type Env } from './config.js';
 import { deliver, makePlan, type Channel, type Message } from './channels.js';
-import { NOTIFICATION_MATCHER } from './claude-code.js';
+import { claudeSettingsPath, NOTIFICATION_MATCHER } from './claude-code.js';
 import { t } from './i18n.js';
+import { shouldNotify, type NotifyEvent } from './notifications.js';
+import { transcriptEndTime } from './hook-time.js';
 import { findSessionName } from './reply-platform.js';
 import { lifecycleHook, interactionHook, attachReply, mapReplies, notificationCoverage, type ReplyHookOptions } from './reply-hooks.js';
 
@@ -28,11 +31,31 @@ function metadata(value: unknown, limit: number): string {
   const chars = Array.from(clean);
   return chars.length > limit ? chars.slice(0, limit).join('') + '…' : clean;
 }
+function footerValues(data: any, sessionName: string, time = '') {
+  return {
+    project: typeof data.cwd === 'string' && data.cwd.trim() ? metadata(data.cwd, 300) : '',
+    topic: typeof sessionName === 'string' && sessionName.trim() ? metadata(sessionName.trim(), 120) : '',
+    session: typeof data.session_id === 'string' && data.session_id.trim() ? metadata(data.session_id, 120) : '',
+    time,
+  };
+}
 function footer(data: any, sessionName: string): string {
-  const project = typeof data.cwd === 'string' && data.cwd.trim() ? t('hook.footerProject', { value: metadata(data.cwd, 300) }) : '';
-  const topic = typeof sessionName === 'string' && sessionName.trim() ? t('hook.footerTopic', { value: metadata(sessionName.trim(), 120) }) : '';
-  const session = typeof data.session_id === 'string' && data.session_id.trim() ? t('hook.footerSession', { value: metadata(data.session_id, 120) }) : '';
+  const values = footerValues(data, sessionName);
+  const project = values.project ? t('hook.footerProject', { value: values.project }) : '';
+  const topic = values.topic ? t('hook.footerTopic', { value: values.topic }) : '';
+  const session = values.session ? t('hook.footerSession', { value: values.session }) : '';
   return [project, topic, session].filter(Boolean).join('\n');
+}
+const pad = (value: number) => String(value).padStart(2, '0');
+/** 使用本机本地时间，格式固定为 YYYY-MM-DD HH:mm:ss。 */
+export function formatTime(time: Date): string {
+  return `${time.getFullYear()}-${pad(time.getMonth() + 1)}-${pad(time.getDate())} `
+    + `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`;
+}
+/** 只替换已知变量；未知占位符保持原样，便于发现模板拼写错误。 */
+export function renderFooter(template: string, data: any, sessionName: string, time = ''): string {
+  const values = footerValues(data, sessionName, time);
+  return template.replace(/\{(project|topic|session|time)\}/g, (_, key: string) => values[key as keyof typeof values]);
 }
 export function claudeHookMessage(bytes: Uint8Array, sessionName = ''): Message | null {
   if (bytes.byteLength > MAX_HOOK_BYTES) throw new ConfigError(t('hook.tooLarge'));
@@ -61,24 +84,43 @@ export interface HookContext {
   err: (text: string) => void;
   response?: (value: Record<string, any>) => void;
   reply?: ReplyHookOptions;
+  /** 测试注入时钟；默认使用当前本地时间。 */
+  now?: () => Date;
 }
 export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, context: HookContext): Promise<void> {
   const message = claudeHookMessage(bytes);
   const data = JSON.parse(decodeUtf8(bytes));
+  const now = context.now?.() ?? new Date();
   const options = { send: context.send, ...context.reply, env: context.env, err: context.err, response: context.response };
   try {
     await lifecycleHook(data, configFile, options);
     await interactionHook(data, configFile, options);
   } catch { context.err(t('hook.interactionFailed')); }
   if (!message) return;
+  const config = await loadConfig(configFile, true, context.env);
+  const event: NotifyEvent = data.hook_event_name === 'Stop' ? 'stop' : 'waiting';
+  // 静默或项目过滤只影响普通通知；不启动桥接、不生成回复按钮。
+  if (!shouldNotify(config, event, data.cwd, now)) return;
   let sessionName = '';
   try { sessionName = await findSessionName(data.session_id, { env: context.env }); }
   catch { context.err(t('hook.sessionNameFailed')); }
   const notification = sessionName ? claudeHookMessage(bytes, sessionName) ?? message : message;
+  if (config.templates.footer !== null) {
+    let time = '';
+    if (config.templates.footer.includes('{time}')) {
+      // Stop 优先使用 transcript 最后一条 assistant 记录的时间；读取不到时回退到 hook 触发时间，而不是发送时间。
+      let ended: Date | null = null;
+      if (data.hook_event_name === 'Stop') {
+        try { ended = await transcriptEndTime(data.transcript_path, path.dirname(claudeSettingsPath(context.env)), now); }
+        catch { /* 配置目录不可用时使用上面的回退时间。 */ }
+      }
+      time = formatTime(ended ?? now);
+    }
+    notification.footer = renderFooter(config.templates.footer, data, sessionName, time);
+  }
   let binding = null;
   try { binding = await attachReply(notification, data, configFile, options); }
   catch { context.err(t('hook.replyNotReady')); }
-  const config = await loadConfig(configFile, true, context.env);
   let covered = { telegram: [] as string[], feishu: false };
   try { covered = await notificationCoverage(data, configFile, config, options); }
   catch { context.err(t('hook.coverageFailed')); }

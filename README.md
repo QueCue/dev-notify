@@ -57,17 +57,18 @@ dev-notify update --no-post # 只更新包，不执行 hooks/桥接维护
 
 - Telegram、飞书双渠道通知，按渲染后的长度分段，不会悄悄截断内容。
 - 文本、严格 UTF-8 文件或标准输入；支持渠道选择、通知级别、辅助信息。
-- 交互配置、隐藏输入、系统凭据存储、环境变量覆盖。
+- 交互配置（含 Telegram 接收人自动发现）、隐藏输入、系统凭据存储、环境变量覆盖。
 - 配置更新冲突检测、失败恢复、凭据清理。
 - 安装时默认随汇总确认发送测试通知，可用 `--no-test` 跳过；测试失败不会撤销已保存的配置。
 - 默认随汇总确认安装 Claude Code 集成：最终回复、等待通知；可用 `--no-hooks` 跳过，支持独立查询和移除。
+- 可按完成/等待事件、项目绝对路径过滤 Claude Code 通知，并支持本机时间的静默时段。
 - 独立授权的 Telegram 按钮回复、直接回复消息、飞书跳转；逐段映射到具体会话。
 - 普通回复本地排队、终端提交与 `UserPromptSubmit` 收到确认，状态不混淆。
 - `AskUserQuestion` 原始选项、单选/多选、自定义答案，通过官方 hook JSON 直接回传。
 - 另外选择启用后，可逐次允许或拒绝工具权限，或填写自定义拒绝说明；不写永久权限规则。
 - `paths`、`doctor`、`status`、`send --dry-run` 离线诊断；`reply start/status/stop/disable/run` 管理桥接。
 
-**通用通知不依赖 Claude Code。** npm 安装不会修改其他应用的配置，也不会启动后台服务。通知 hooks 和远程输入是两层独立授权：默认只发送通知，授权后才启用回复桥接。没有自动配对、远程 shell 执行器或系统开机自启。
+**通用通知不依赖 Claude Code。** npm 安装不会修改其他应用的配置，也不会启动后台服务。通知 hooks 和远程输入是两层独立授权：默认只发送通知，授权后才启用回复桥接。没有自动授权配对、远程 shell 执行器或系统开机自启。
 
 ## 配置向导
 
@@ -77,7 +78,7 @@ node dist/cli.js setup
 
 1. 选择 Telegram、飞书或两者；编辑已有配置时显示当前选择，直接回车保留。
 2. Token、webhook 和签名密钥均以隐藏输入读取（不回显）。终端无法安全隐藏输入时，向导会停止，不会改用明文输入。
-3. Telegram 手动填写数字 chat_id，多个用逗号分隔；用户需要先启动 Bot。这里不会自动启动 getUpdates 配对。
+3. Telegram 会先尝试读取 Bot 最近的更新，列出最近与 Bot 对话的私聊、群组或频道（只提取 chat_id 和名称，不显示或保存消息正文），可输入 `#1,#3` 选择；也可以直接填写数字 chat_id，多个用逗号分隔。桥接正在运行、Bot 已配置 webhook 或网络失败时会跳过自动发现并回退手动填写。用户需要先启动 Bot 并给 Bot 发一条消息。
 4. 汇总展示渠道、接收人数、测试通知、Claude Code 用户级设置路径和发送范围，一次确认后保存。输入错误可以重试，Ctrl+C 取消。
 5. 确认后默认发送固定内容的测试通知（`--no-test` 跳过）。测试失败不会撤销已成功保存的配置。
 6. 确认后默认合并安装 Claude Code 通知 hooks（`--no-hooks` 跳过）。已有集成保持原样，不重复添加。
@@ -110,7 +111,7 @@ dev-notify integration claude-code remove
 源码验证时将上述 `dev-notify` 替换为 `node dist/cli.js`。安装可用 `--config <绝对或相对路径>` 绑定指定通知配置；执行时将其解析为绝对路径并保存到 hook 参数。自定义 `DEV_NOTIFY_HOME` 的使用者应在安装时设置该变量。
 
 - **配置范围**：默认用户级 `~/.claude/settings.json`，设置 `CLAUDE_CONFIG_DIR` 时使用该绝对目录下的 `settings.json`，覆盖该 Claude Code 配置目录下的全部项目。不会扫描或修改每个项目的设置。
-- **发送范围**：Stop 直接使用事件的 `last_assistant_message` 转发最终回复；没有正文时会发送明确的完成提示，不会回读可能滞后的 transcript。不会发送思考过程或工具结果。通知底部附带项目绝对路径、会话名称（本地会话注册表可读取时）和会话 ID。启用远程回复后还会发送结构化问题、选项，以及另行授权的工具权限请求参数；它们可能含敏感信息，启用前请检查接收目标。
+- **发送范围**：Stop 直接使用事件的 `last_assistant_message` 转发最终回复；没有正文时会发送明确的完成提示，不会用可能滞后的 transcript 补正文。仅当 footer 模板使用 `{time}` 时，才读取 transcript 尾部最后一条 assistant 记录的时间戳，不读取消息正文。不会发送思考过程或工具结果。通知底部附带项目绝对路径、会话名称（本地会话注册表可读取时）和会话 ID。启用远程回复后还会发送结构化问题、选项，以及另行授权的工具权限请求参数；它们可能含敏感信息，启用前请检查接收目标。
 - **等待提醒**：转发 `permission_prompt`、`elicitation_dialog`、`elicitation_url_dialog`、`agent_needs_input`；忽略 `idle_prompt`、认证成功等其他通知。当前会话最后一项调用为选择题、没有其他未结束调用，且结构化通知已完整投递时，按接收人抑制重复的 `permission_prompt`；飞书会单独核对投递成功及目标。短期保留已结束题目的覆盖状态，以处理迟到提醒；新一轮输入、后续其他工具调用、会话切换或交互有效期结束后不再沿用。没有覆盖到的接收人、只投递了一部分或投递失败、以及无法核验的情况，仍会发送通用提醒；其他通知类型不受影响。Notification 事件本身不包含完整选项，因此不会根据提示文字猜测答案；可靠的选项交互见下节。不支持的 MCP 表单/URL 等请求保留在本机处理。
 - **合并与移除**：保留权限、环境变量和其他 hooks；重复安装不会累加。同一用户级设置中的本工具 hooks 会在确认后更新到当前 Node、CLI 和通知配置路径。只移除带本工具标记及匹配参数结构的处理器，不删除设置文件或凭据。
 - **与旧工具共存**：旧版、项目级或插件 hooks 不会被自动删除，可能造成重复通知。安装时会提示当前用户级文件中的其他处理器；旧集成需由用户自行确认停用。
@@ -201,6 +202,10 @@ Node 版使用 **Windows Credential Manager / macOS Keychain**，通过原生 No
 {
   "version": 1,
   "language": "zh",
+  "notifications": {
+    "events": {"stop": true, "waiting": true},
+    "projects": {"allow": [], "deny": []}
+  },
   "telegram": {"enabled": true, "chat_ids": [], "token_env": "TELEGRAM_BOT_TOKEN"},
   "feishu": {"enabled": true, "webhook_env": "FEISHU_WEBHOOK", "secret_env": "FEISHU_SECRET"}
 }
@@ -209,6 +214,37 @@ Node 版使用 **Windows Credential Manager / macOS Keychain**，通过原生 No
 ### 界面语言
 
 `--lang zh|en` 可临时切换单次命令的界面语言，`DEV_NOTIFY_LANG=zh|en` 可为当前环境设置语言；持久设置保存在配置的 `language` 字段（`zh` 或 `en`）。优先级为 `--lang` > `DEV_NOTIFY_LANG` > 配置 > 默认 `zh`。运行 `dev-notify language` 查看当前生效语言，`dev-notify language zh|en` 保存切换。CLI 输出、错误提示、通知内容、交互按钮和回复桥接消息都会使用所选语言；`setup` 创建新配置时会保存当前语言。
+
+### 通知过滤与静默时段
+
+`notifications` 段只影响 Claude Code 的普通完成通知和等待提醒；`send` 命令、远程回复桥接、答题和工具权限处理不受影响。所有字段都是可选的，省略时保持默认全量发送。
+
+- `events.stop` 控制 Stop 完成通知，`events.waiting` 控制权限请求等等待提醒；默认都为 `true`。
+- `projects.allow` / `projects.deny` 使用绝对路径前缀匹配，`deny` 优先。`allow` 非空时只发送这些目录下的通知；项目路径缺失时 `allow` 不放行、`deny` 不匹配。路径按本机平台解析，Windows 不区分大小写。
+- `quiet_hours` 使用本机本地时间，支持跨午夜；`start` 与 `end` 相同表示不启用。静默期间不发送普通通知，也不会生成回复按钮；桥接、本地答题和权限处理仍会运行，但等待提醒会被抑制。需要远程处理权限请求时，请不要依赖静默时段内的通知。
+
+```json
+"notifications": {
+  "events": {"stop": true, "waiting": false},
+  "projects": {"allow": ["/Users/me/work"], "deny": []},
+  "quiet_hours": {"start": "22:00", "end": "08:00"}
+}
+```
+
+### 消息模板
+
+`templates.footer` 可替换 Claude Code 通知底部的项目、主题和会话信息。省略时使用内置的双语格式；设为空字符串会完全隐藏底部信息。模板最多 1000 个字符，支持换行，可用变量：
+
+- `{project}`：项目绝对路径
+- `{topic}`：会话名称（本地会话注册表可读取时）
+- `{session}`：会话 ID
+- `{time}`：时间，格式为 `YYYY-MM-DD HH:mm:ss`。Stop 通知优先读取本机 transcript 尾部最后一条 assistant 记录的时间，即 Claude Code 实际结束时间；transcript 不可读或时间异常时回退到 hook 触发时间，而不是发送通知的时间。Notification 使用 hook 触发时间。只有模板包含 `{time}` 时才会读取 transcript。
+
+未知占位符保持原样。变量值会清理控制字符，超过长度限制的部分截断并加省略号。
+
+```json
+"templates": {"footer": "项目：{project}\n结束：{time}\n会话：{session}"}
+```
 
 ### 凭据与接收人
 
@@ -270,6 +306,6 @@ npm pack --dry-run
 
 npm 发布白名单只有 `dist/*.js`、README、SECURITY、CHANGELOG、LICENSE 和必需的 package.json；不包含测试、配置或密文。没有 postinstall、自动启动或自写下载脚本；预编译原生依赖由 npm 的平台 optional 包解析，**请勿使用 `--omit=optional`**。macOS x64/arm64 和 Windows x64/arm64 预编译包由依赖提供，提供包并不等同于本项目已完成实机验收。
 
-本机验证环境为 Windows x64、Node 24。自动化回归 163 项：162 通过、0 失败、1 项需显式启用的原生凭据测试跳过。覆盖临时 hooks、回复/授权/过期/防重放、单选/多选/自定义、单次权限 JSON、双端竞争、反馈异常及按接收人的重复提醒去重。实际 CLI 子进程完成后台 start → PreToolUse 登记 → PermissionRequest → 假 Bot 按钮 → JSON 答案 → 模拟 PostToolUse → 最终反馈 → 通知去重/后续工具提醒 → stop；该闭环使用模拟网络和进程元数据，不能替代实机输入验证。另由用户在 Windows 原生 Claude Code 2.1.316 与真实 Telegram 完成本机优先、远端优先、多选、自定义、不同答案竞争，以及延迟通用提醒去重的实机验收。隔离编译和测试不会覆盖真实 hooks 引用的 dist；Windows 原生输入帮助类的自动化测试只做编译/布局验证，不会执行真实 Send。macOS 两条终端适配器只有模拟验证；macOS 实机、Node 最低版本、版本管理器切换、工具权限应答实机及完整公开发布审计尚未完成验收。
+本机验证环境为 Windows x64、Node 24。自动化回归 203 项：202 通过、0 失败、1 项需显式启用的原生凭据测试跳过。覆盖临时 hooks、回复/授权/过期/防重放、单选/多选/自定义、单次权限 JSON、双端竞争、反馈异常及按接收人的重复提醒去重。实际 CLI 子进程完成后台 start → PreToolUse 登记 → PermissionRequest → 假 Bot 按钮 → JSON 答案 → 模拟 PostToolUse → 最终反馈 → 通知去重/后续工具提醒 → stop；该闭环使用模拟网络和进程元数据，不能替代实机输入验证。另由用户在 Windows 原生 Claude Code 2.1.316 与真实 Telegram 完成本机优先、远端优先、多选、自定义、不同答案竞争，以及延迟通用提醒去重的实机验收。隔离编译和测试不会覆盖真实 hooks 引用的 dist；Windows 原生输入帮助类的自动化测试只做编译/布局验证，不会执行真实 Send。macOS 两条终端适配器只有模拟验证；macOS 实机、Node 最低版本、版本管理器切换、工具权限应答实机及完整公开发布审计尚未完成验收。
 
 采用 MIT，见 [LICENSE](LICENSE)。安全边界见 [SECURITY.md](SECURITY.md)。版本更新需单独发布到 npm，GitHub 推送不会自动更新 npm 安装包。

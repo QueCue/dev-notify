@@ -57,17 +57,18 @@ Actual integrity verification, registry configuration, permission handling, and 
 
 - Telegram and Feishu notification channels, split by rendered length without silently truncating content.
 - Text, strict UTF-8 files, or standard input; channel selection, notification level, and auxiliary metadata.
-- Interactive configuration, hidden input, system credential storage, and environment variable overrides.
+- Interactive configuration (including Telegram recipient discovery), hidden input, system credential storage, and environment variable overrides.
 - Configuration update conflict detection, failure recovery, and credential cleanup.
 - By default, installation sends a test notification as part of the summary confirmation, which `--no-test` skips; a failed test does not roll back saved configuration.
 - By default, installs the Claude Code integration as part of the summary confirmation: final replies and waiting notifications; `--no-hooks` skips this, and independent query and removal are supported.
+- Claude Code notifications can be filtered by completion/waiting event and project absolute paths, with local-time quiet hours.
 - Separately authorized Telegram button replies, direct message replies, and Feishu jumps; each segment maps to a specific session.
 - Normal replies queue locally, are submitted to the terminal, and `UserPromptSubmit` confirms receipt, with the states kept distinct.
 - `AskUserQuestion` original options, single-select/multi-select, and custom answers are returned directly through the official hook JSON.
 - When separately enabled, you can allow or deny tool permissions one at a time, or provide a custom denial reason; no persistent permission rules are written.
 - Offline diagnostics via `paths`, `doctor`, `status`, and `send --dry-run`; manage the bridge with `reply start/status/stop/disable/run`.
 
-**General notifications do not depend on Claude Code.** npm installation does not modify other applications' configuration or start background services. Notification hooks and remote input are two independent layers of authorization: by default only notifications are sent, and the reply bridge is enabled only after authorization. There is no automatic pairing, remote shell executor, or system auto-start.
+**General notifications do not depend on Claude Code.** npm installation does not modify other applications' configuration or start background services. Notification hooks and remote input are two independent layers of authorization: by default only notifications are sent, and the reply bridge is enabled only after authorization. There is no automatic authorization or pairing, remote shell executor, or system auto-start.
 
 ## Configuration wizard
 
@@ -77,7 +78,7 @@ node dist/cli.js setup
 
 1. Choose Telegram, Feishu, or both; when editing an existing configuration, the current selection is shown and pressing Enter keeps it.
 2. Token, webhook, and signing secret are all read as hidden input (not echoed). If the terminal cannot safely hide input, the wizard stops and does not switch to plaintext input.
-3. For Telegram, enter numeric chat_id manually, separated by commas for multiple; the user must start the bot first. getUpdates pairing is not started automatically here.
+3. For Telegram, setup first reads the bot's recent updates and lists recent private chats, groups, or channels that have talked to the bot (only chat_id and name are extracted; message text is never displayed or saved). Enter `#1,#3` to select them, or enter numeric chat_id values separated by commas. Discovery is skipped and manual entry is used when the bridge is running, the bot has a webhook configured, or the network request fails. Start the bot and send it a message first.
 4. The summary shows channels, recipient count, test notification, Claude Code user-level settings path, and sending scope; save after one confirmation. Input errors can be retried; Ctrl+C cancels.
 5. After confirmation, a fixed-content test notification is sent by default (`--no-test` skips it). A failed test does not roll back successfully saved configuration.
 6. After confirmation, Claude Code notification hooks are merged and installed by default (`--no-hooks` skips it). Existing integrations are left as-is and are not added again.
@@ -110,7 +111,7 @@ dev-notify integration claude-code remove
 For source verification, replace `dev-notify` above with `node dist/cli.js`. Installation can use `--config <absolute or relative path>` to bind a specified notification configuration; at execution it resolves the path to absolute and saves it in the hook arguments. Users with a custom `DEV_NOTIFY_HOME` should set that variable during installation.
 
 - **Configuration scope**: by default user-level `~/.claude/settings.json`; when `CLAUDE_CONFIG_DIR` is set, `settings.json` under that absolute directory, covering all projects under that Claude Code configuration directory. Per-project settings are not scanned or modified.
-- **Sending scope**: Stop directly uses the event's `last_assistant_message` to forward the final reply; when there is no body, it sends an explicit completion notice and does not re-read a possibly lagging transcript. It does not send thinking processes or tool results. The notification footer includes the project absolute path, session name (when readable from the local session registry), and session ID. After remote replies are enabled, it also sends structured questions, options, and separately authorized tool permission request parameters; these may contain sensitive information, so check the recipients before enabling.
+- **Sending scope**: Stop directly uses the event's `last_assistant_message` to forward the final reply; when there is no body, it sends an explicit completion notice and does not use a possibly lagging transcript to fill in body text. Only when the footer template uses `{time}` does it read the timestamp of the last assistant record at the end of the transcript, without reading message text. It does not send thinking processes or tool results. The notification footer includes the project absolute path, session name (when readable from the local session registry), and session ID. After remote replies are enabled, it also sends structured questions, options, and separately authorized tool permission request parameters; these may contain sensitive information, so check the recipients before enabling.
 - **Waiting reminders**: forwards `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, and `agent_needs_input`; ignores `idle_prompt`, authentication success, and other notifications. When the current session's last call is a question, there are no other unfinished calls, and the structured notification has been fully delivered, duplicate `permission_prompt` is suppressed per recipient; Feishu separately verifies successful delivery and target. Completed-question override state is retained briefly to handle late reminders; it is not reused after a new round of input, subsequent other tool calls, a session switch, or interaction validity expiry. Recipients not covered, partial or failed delivery, and unverifiable cases still receive the general reminder; other notification types are unaffected. The Notification event itself does not contain complete options, so answers are not guessed from prompt text; reliable option interaction is described in the next section. Unsupported MCP form/URL requests remain handled locally.
 - **Merging and removal**: preserves permissions, environment variables, and other hooks; repeated installation does not accumulate. This tool's hooks in the same user-level settings are updated to the current Node, CLI, and notification configuration paths after confirmation. Only handlers carrying this tool's markers and matching argument structure are removed; the settings file and credentials are not deleted.
 - **Coexistence with old tools**: old, project-level, or plugin hooks are not automatically deleted and may cause duplicate notifications. Installation reports other handlers in the current user-level file; old integrations must be disabled by the user's own decision.
@@ -201,6 +202,10 @@ The old prototype used `backend: "system"`, which on Windows is a DPAPI file and
 {
   "version": 1,
   "language": "zh",
+  "notifications": {
+    "events": {"stop": true, "waiting": true},
+    "projects": {"allow": [], "deny": []}
+  },
   "telegram": {"enabled": true, "chat_ids": [], "token_env": "TELEGRAM_BOT_TOKEN"},
   "feishu": {"enabled": true, "webhook_env": "FEISHU_WEBHOOK", "secret_env": "FEISHU_SECRET"}
 }
@@ -209,6 +214,37 @@ The old prototype used `backend: "system"`, which on Windows is a DPAPI file and
 ### Interface language
 
 `--lang zh|en` switches the interface language for a single command, and `DEV_NOTIFY_LANG=zh|en` sets it for the current environment; the persistent setting is stored in the `language` field of the configuration (`zh` or `en`). Precedence is `--lang` > `DEV_NOTIFY_LANG` > configuration > default `zh`. Run `dev-notify language` to view the effective language, and `dev-notify language zh|en` to save a change. CLI output, error messages, notification content, interaction buttons, and reply bridge messages all use the selected language; `setup` saves the current language when creating a new configuration.
+
+### Notification filtering and quiet hours
+
+The `notifications` section only affects Claude Code completion notifications and waiting reminders; the `send` command, reply bridge, question answering, and tool-permission handling are unaffected. Every field is optional; omitting it keeps the default of sending everything.
+
+- `events.stop` controls Stop completion notifications and `events.waiting` controls waiting reminders such as permission requests; both default to `true`.
+- `projects.allow` / `projects.deny` use absolute path prefixes, with `deny` taking precedence. When `allow` is non-empty, only notifications from those directories are sent; when the project path is missing, `allow` does not match and `deny` does not match. Paths are resolved for the local platform; Windows comparisons are case-insensitive.
+- `quiet_hours` uses local time and supports ranges that cross midnight; identical `start` and `end` disable it. During quiet hours, ordinary notifications and reply buttons are suppressed; the bridge, local question answering, and permission handling still run, but waiting reminders are suppressed. Do not rely on notifications during quiet hours if you need to handle permission requests remotely.
+
+```json
+"notifications": {
+  "events": {"stop": true, "waiting": false},
+  "projects": {"allow": ["/Users/me/work"], "deny": []},
+  "quiet_hours": {"start": "22:00", "end": "08:00"}
+}
+```
+
+### Message templates
+
+`templates.footer` replaces the project, topic, and session lines at the bottom of Claude Code notifications. Omit it to use the built-in bilingual format; set it to an empty string to hide the footer entirely. Templates are limited to 1000 characters, support newlines, and accept these variables:
+
+- `{project}`: absolute project path
+- `{topic}`: session name (when the local session registry provides one)
+- `{session}`: session ID
+- `{time}`: time in `YYYY-MM-DD HH:mm:ss` format. Stop notifications first read the timestamp of the last assistant record at the end of the local transcript, which is when Claude Code actually finished; if the transcript is unreadable or the time is implausible, it falls back to the hook trigger time rather than the time the notification is sent. Notification events use the hook trigger time. The transcript is read only when the template contains `{time}`.
+
+Unknown placeholders are left as-is. Variable values have control characters removed and are truncated with an ellipsis when they exceed their limits.
+
+```json
+"templates": {"footer": "Project: {project}\nFinished: {time}\nSession: {session}"}
+```
 
 ### Credentials and recipients
 
@@ -270,6 +306,6 @@ npm pack --dry-run
 
 The npm publish whitelist contains only `dist/*.js`, README, SECURITY, CHANGELOG, LICENSE, and the required package.json; tests, configuration, and ciphertext are not included. There is no postinstall, auto-start, or self-written download script; prebuilt native dependencies are resolved by npm's platform optional packages, **do not use `--omit=optional`**. macOS x64/arm64 and Windows x64/arm64 prebuilt packages are provided by dependencies; providing packages does not mean this project has completed real-machine acceptance.
 
-The local verification environment is Windows x64 with Node 24. Automated regression has 163 items: 162 passed, 0 failed, and 1 native credential test requiring explicit enablement was skipped. Coverage includes temporary hooks, reply/authorization/expiry/anti-replay, single-select/multi-select/custom, one-time permission JSON, two-sided races, feedback exceptions, and per-recipient duplicate reminder suppression. The actual CLI subprocess completes the loop of background start → PreToolUse registration → PermissionRequest → fake bot button → JSON answer → simulated PostToolUse → final feedback → notification deduplication/subsequent tool reminder → stop; this loop uses mock network and process metadata and cannot replace real-machine input verification. Separately, the user completed real-machine acceptance on Windows native Claude Code 2.1.316 with real Telegram for local-first, remote-first, multi-select, custom input, competing different answers, and delayed general reminder deduplication. Isolated compilation and tests do not cover the `dist` referenced by real hooks; automated tests for the Windows native input helper class only verify compilation/layout and do not perform a real Send. macOS's two terminal adapters have only simulation verification; macOS real-machine testing, the minimum Node version, version manager switching, tool permission answering on a real machine, and a full public release audit have not yet been accepted.
+The local verification environment is Windows x64 with Node 24. Automated regression has 203 items: 202 passed, 0 failed, and 1 native credential test requiring explicit enablement was skipped. Coverage includes temporary hooks, reply/authorization/expiry/anti-replay, single-select/multi-select/custom, one-time permission JSON, two-sided races, feedback exceptions, and per-recipient duplicate reminder suppression. The actual CLI subprocess completes the loop of background start → PreToolUse registration → PermissionRequest → fake bot button → JSON answer → simulated PostToolUse → final feedback → notification deduplication/subsequent tool reminder → stop; this loop uses mock network and process metadata and cannot replace real-machine input verification. Separately, the user completed real-machine acceptance on Windows native Claude Code 2.1.316 with real Telegram for local-first, remote-first, multi-select, custom input, competing different answers, and delayed general reminder deduplication. Isolated compilation and tests do not cover the `dist` referenced by real hooks; automated tests for the Windows native input helper class only verify compilation/layout and do not perform a real Send. macOS's two terminal adapters have only simulation verification; macOS real-machine testing, the minimum Node version, version manager switching, tool permission answering on a real machine, and a full public release audit have not yet been accepted.
 
 Licensed under MIT, see [LICENSE](LICENSE). Security boundaries are in [SECURITY.en.md](SECURITY.en.md). Version updates must be published separately to npm; pushing to GitHub does not automatically update the npm package.

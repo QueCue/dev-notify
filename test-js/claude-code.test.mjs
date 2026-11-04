@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { claudeSettingsPath, claudeCodeStatus, configureClaudeCode, HOOK_MARKER, NOTIFICATION_MATCHER, EVENTS } from '../dist/claude-code.js';
-import { claudeHookMessage, dispatchClaudeHook, readHookInput, MAX_HOOK_BYTES } from '../dist/claude-hook.js';
+import { claudeHookMessage, dispatchClaudeHook, readHookInput, MAX_HOOK_BYTES, formatTime } from '../dist/claude-hook.js';
 import { Cancelled } from '../dist/prompts.js';
 import { main } from '../dist/cli.js';
 import { deliver } from '../dist/channels.js';
@@ -311,6 +311,81 @@ test('损坏 hook 输入、错误类型和超限正文均拒绝，不泄漏或�
 test('读取 hook stdin 完整拼接，超限立即失败', async () => {
   assert.equal(Buffer.from(await readHookInput(Readable.from([Buffer.from('中文'), Buffer.from('😀')]))).toString(), '中文😀');
   await assert.rejects(readHookInput(Readable.from([Buffer.alloc(11)]), 10), /超过大小限制/);
+});
+test('通知事件开关只抑制对应类型，不影响另一类', async t => {
+  const ctx = await temp(t);
+  await writeFile(ctx.config, JSON.stringify({ ...CONFIG, notifications: { events: { stop: false } } }));
+  const plans = [];
+  const options = { env: ctx.env, err: () => {}, send: async plan => {
+    plans.push(plan); return { ok: true, channel: plan.channel, sent: plan.items.length, planned: plan.items.length };
+  } };
+  await dispatchClaudeHook(json(stop()), ctx.config, options);
+  assert.equal(plans.length, 0);
+  await dispatchClaudeHook(json({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: '请批准' }),
+    ctx.config, options);
+  assert.equal(plans.length, 1);
+});
+test('项目 allow 过滤普通通知，其他项目不发', async t => {
+  const ctx = await temp(t);
+  const cwd = process.platform === 'win32' ? 'C:\\work\\项目' : '/work/项目';
+  const other = process.platform === 'win32' ? 'C:\\other\\项目' : '/other/项目';
+  const allow = process.platform === 'win32' ? 'C:\\work' : '/work';
+  await writeFile(ctx.config, JSON.stringify({ ...CONFIG, notifications: { projects: { allow: [allow] } } }));
+  const plans = [];
+  const options = { env: ctx.env, err: () => {}, send: async plan => {
+    plans.push(plan); return { ok: true, sent: 1, planned: 1, channel: plan.channel };
+  } };
+  await dispatchClaudeHook(json(stop({ cwd })), ctx.config, options);
+  assert.equal(plans.length, 1);
+  await dispatchClaudeHook(json(stop({ cwd: other })), ctx.config, options);
+  assert.equal(plans.length, 1);
+});
+test('静默时段按注入的本地时钟抑制通知', async t => {
+  const ctx = await temp(t);
+  await writeFile(ctx.config, JSON.stringify({ ...CONFIG,
+    notifications: { quiet_hours: { start: '22:00', end: '08:00' } } }));
+  const plans = [];
+  const options = now => ({ env: ctx.env, err: () => {}, now, send: async plan => {
+    plans.push(plan); return { ok: true, sent: 1, planned: 1, channel: plan.channel };
+  } });
+  await dispatchClaudeHook(json(stop()), ctx.config, options(() => new Date(2026, 0, 1, 23, 0)));
+  assert.equal(plans.length, 0);
+  await dispatchClaudeHook(json(stop()), ctx.config, options(() => new Date(2026, 0, 1, 12, 0)));
+  assert.equal(plans.length, 1);
+});
+test('自定义 footer 模板替换默认项目/主题/会话行，空模板隐藏底部信息', async t => {
+  const ctx = await temp(t);
+  await writeFile(ctx.config, JSON.stringify({ ...CONFIG, templates: { footer: 'P={project} S={session}' } }));
+  const plans = [];
+  const options = { env: ctx.env, err: () => {}, send: async plan => {
+    plans.push(plan); return { ok: true, sent: 1, planned: 1, channel: plan.channel };
+  } };
+  await dispatchClaudeHook(json(stop()), ctx.config, options);
+  assert.match(plans[0].items[0].plain, /P=C:\\work\\项目 S=test-session/);
+  assert.ok(!plans[0].items[0].plain.includes('主题：'));
+  assert.ok(!plans[0].items[0].plain.includes('会话：'));
+
+  await writeFile(ctx.config, JSON.stringify({ ...CONFIG, templates: { footer: '' } }));
+  await dispatchClaudeHook(json(stop()), ctx.config, options);
+  assert.ok(!plans[1].items[0].plain.includes('────────'));
+});
+test('模板 {time} 优先使用 transcript 结束时间，读取失败才回退 hook 时间', async t => {
+  const ctx = await temp(t);
+  const directory = path.join(ctx.directory, 'projects', 'project');
+  await mkdir(directory, { recursive: true });
+  const transcript = path.join(directory, 'session.jsonl');
+  await writeFile(transcript, JSON.stringify({ type: 'assistant', timestamp: '2026-11-04T10:20:30.000Z' }) + '\n');
+  await writeFile(ctx.config, JSON.stringify({ ...CONFIG, templates: { footer: 'T={time}' } }));
+  const plans = [];
+  const options = now => ({ env: ctx.env, err: () => {}, now, send: async plan => {
+    plans.push(plan); return { ok: true, sent: 1, planned: 1, channel: plan.channel };
+  } });
+  const hookTime = () => new Date('2026-11-04T10:20:35.000Z');
+  await dispatchClaudeHook(json(stop({ transcript_path: transcript })), ctx.config, options(hookTime));
+  assert.ok(plans[0].items[0].plain.includes('T=' + formatTime(new Date('2026-11-04T10:20:30.000Z'))));
+  assert.ok(!plans[0].items[0].plain.includes('T=' + formatTime(hookTime())));
+  await dispatchClaudeHook(json(stop({ transcript_path: path.join(ctx.root, 'missing.jsonl') })), ctx.config, options(hookTime));
+  assert.ok(plans[1].items[0].plain.includes('T=' + formatTime(hookTime())));
 });
 test('Stop 经过真实分段规划与模拟投递，所有正文完整保留', async t => {
   const ctx = await temp(t), body = '分段内容😀\n'.repeat(2000), plans = [], errors = [];

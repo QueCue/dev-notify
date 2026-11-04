@@ -5,10 +5,19 @@ import { ConfigError, decodeUtf8, example, parseConfig, ready, type Config, type
 import { encodeBundle, nativeStore, type Bundle, type Reference, type Store } from './credentials.js';
 import { getLocale, joinList, t, type Locale } from './i18n.js';
 import { terminalPrompts, type Prompts } from './prompts.js';
+import { bridgeStatus } from './reply-bridge.js';
+import { discoverChats, type ChatCandidate } from './telegram-discovery.js';
 
 export type RawConfig = Record<string, any>;
 const yes = (text: string) => /^(y|yes)$/i.test(text.trim());
 const defaultYes = (text: string) => !text.trim() || yes(text);
+const KIND_KEYS = {
+  private: 'setup.discoveryKind.private',
+  group: 'setup.discoveryKind.group',
+  supergroup: 'setup.discoveryKind.supergroup',
+  channel: 'setup.discoveryKind.channel',
+  unknown: 'setup.discoveryKind.unknown',
+} as const;
 export async function snapshot(file: string): Promise<Buffer | null> {
   try { return await readFile(file); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw new ConfigError(t('setup.readFailed')); }
@@ -84,11 +93,14 @@ export interface SetupOptions {
   testSend?: (config: Config) => Promise<boolean>;
   /** 在唯一一次确认前展示的安装范围说明。 */
   notes?: string[];
+  /** 自动发现 Telegram 会话；测试可注入，默认读取 Bot 最近的更新。 */
+  discover?: (token: string) => Promise<ChatCandidate[]>;
   /** 确认后执行的附加安装（如 Claude Code hooks）；失败不影响已保存的配置。 */
   afterSave?: () => Promise<void>;
 }
 export async function wizard(file: string, options: SetupOptions = {}): Promise<boolean> {
   const prompts = options.prompts ?? terminalPrompts();
+  const env = options.env ?? process.env;
   const before = await snapshot(file), data = readRaw(before);
   const { out } = prompts;
   if (before === null) data.language = getLocale();
@@ -136,15 +148,45 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
   };
   if (data.telegram.enabled) {
     values.telegram_token = await readValue('Telegram Bot Token', 'telegram_token', true);
-    out(t('setup.telegramChatInstruction'));
+    // 与保存后的运行时一致：显式存在的 token 环境变量优先，空值同样覆盖。
+    const tokenEnv = typeof data.telegram.token_env === 'string' ? data.telegram.token_env : 'TELEGRAM_BOT_TOKEN';
+    const discoveryToken = Object.hasOwn(env, tokenEnv) ? (env[tokenEnv] ?? '').trim() : values.telegram_token;
+    let candidates: ChatCandidate[] = [];
+    let discoveryRan = false;
+    try {
+      if ((await bridgeStatus(file)).running) out(t('setup.discoveryBridgeRunning'));
+      else {
+        candidates = await (options.discover ?? discoverChats)(discoveryToken);
+        discoveryRan = true;
+      }
+    } catch (error) {
+      out(t('setup.discoveryFailed', { reason: error instanceof ConfigError ? error.message : t('common.failure') }));
+    }
+    if (candidates.length) {
+      out(t('setup.discoveryFound'));
+      candidates.forEach((chat, index) => out(`  #${index + 1}  ${chat.id}  ${chat.title}  (${t(KIND_KEYS[chat.kind])})`));
+      out(t('setup.telegramChatInstructionDiscovered'));
+    } else {
+      if (discoveryRan) out(t('setup.discoveryEmpty'));
+      out(t('setup.telegramChatInstruction'));
+    }
+    const chatPrompt = t(candidates.length ? 'setup.telegramChatPromptDiscovered' : 'setup.telegramChatPrompt');
     while (true) {
-      const entered = await prompts.text(t('setup.telegramChatPrompt'));
-      const ids = entered ? entered.split(',').map(item => item.trim()) : data.telegram.chat_ids ?? [];
+      const entered = await prompts.text(chatPrompt);
+      let ids: unknown[];
+      if (!entered) ids = data.telegram.chat_ids ?? [];
+      else if (candidates.length && /^#\d+(?:\s*,\s*#\d+)*$/.test(entered)) {
+        const indexes = entered.split(',').map(item => Number(item.trim().slice(1)));
+        if (indexes.some(value => !Number.isSafeInteger(value) || value < 1 || value > candidates.length)) {
+          out(t('setup.discoverySelectionInvalid')); continue;
+        }
+        ids = [...new Set(indexes.map(value => candidates[value - 1].id))];
+      } else ids = entered.split(',').map(item => item.trim());
       try {
         if (!ids.length) throw new Error();
         const check = parseConfig({ telegram: { chat_ids: ids } }, {});
         data.telegram.chat_ids = check.telegram.chatIds; break;
-      } catch { out(t('setup.telegramChatInvalid')); }
+      } catch { out(t(candidates.length ? 'setup.telegramChatInvalidDiscovered' : 'setup.telegramChatInvalid')); }
     }
   }
   if (data.feishu.enabled) {
@@ -154,7 +196,6 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
   encodeBundle(values);
   const preview = { ...data, credentials: { backend: 'keyring', id: '0'.repeat(32) } };
   parseConfig(preview, {}, () => values);
-  const env = options.env ?? process.env;
   const channels: string[] = [];
   if (data.telegram.enabled) channels.push(t('setup.channelTelegram', { count: data.telegram.chat_ids.length }));
   if (data.feishu.enabled) channels.push(t('setup.channelFeishu'));

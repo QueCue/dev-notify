@@ -36,7 +36,7 @@
 ## Claude Code 集成
 
 - `setup` 默认把通知 hooks 纳入同一次汇总确认；确认前会展示发送范围、目标配置及用户级设置路径。`--no-hooks` 可以只保存通知配置。默认写入 `~/.claude/settings.json`，并尊重绝对路径 `CLAUDE_CONFIG_DIR`。启用后作用于该配置目录下的所有项目，最终回复可能含密钥或业务敏感内容，程序不会自动脱敏；接收人与发送范围需要用户自行确认。
-- hook 直接使用 `last_assistant_message`，不会回读 transcript，也不会主动上传思考过程或工具结果；缺少正文时只发送明确的完成提示。通知底部包含 `cwd` 绝对路径、会话名称与会话 ID；会话名称只从本地 Claude Code 会话注册表读取。输入最大 8 MiB、读取超时 15 秒，超限时会拒绝，不会截断。权限等 Notification 也可能含敏感内容。
+- hook 直接使用 `last_assistant_message`，不会回读 transcript 正文，也不会主动上传思考过程或工具结果；缺少正文时只发送明确的完成提示。仅当 footer 模板使用 `{time}` 时，才读取 Claude 配置目录 `projects` 下对应 transcript 文件尾部最多 2 MiB，提取最后一条 `assistant` 记录的 `timestamp`；不读取、不发送正文。通知底部包含 `cwd` 绝对路径、会话名称与会话 ID；会话名称只从本地 Claude Code 会话注册表读取。输入最大 8 MiB、读取超时 15 秒，超限时会拒绝，不会截断。权限等 Notification 也可能含敏感内容。
 - 生成 `command` + `args` 的无 shell exec 形式，路径不经过 shell 展开；固定安装时使用 Node/CLI/配置的绝对路径，命令参数不含秘密。需要支持该形式与 `async` 的新版 Claude Code；切换 Node 或移动安装目录后，请重新安装 hooks。
 - 保留其他设置和 hooks，重复安装会去重更新，移除时只匹配本工具标记及参数结构。旧版、项目或插件 hooks 不会被自动删除，可能造成重复发送。`status` 只反映本地状态，不涉及全局策略或实际事件投递验收；不会解除禁用、降低权限或绕过托管限制。
 - 写入使用专用排他锁、前后快照及同目录临时文件原子替换；损坏的 JSON 会被拒绝。外部编辑器不遵守这个锁，因此不会宣称无条件消除竞态；强杀可能留下锁或临时文件，程序不会清理不属于本次创建的锁。
