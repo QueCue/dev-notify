@@ -2,11 +2,11 @@
 
 简体中文 | [English](SECURITY.en.md)
 
-npm 包名为 `@quecue/dev-notify`，公开源码见 [QueCue/dev-notify](https://github.com/QueCue/dev-notify)。发布版本以 npm registry 为准，本文描述 0.2.2 源码，不能仅依据源码版本认定安装包已发布。本项目尚未完成安全审计或双平台实机验收。
+npm 包名为 `@quecue/dev-notify`，公开源码见 [QueCue/dev-notify](https://github.com/QueCue/dev-notify)。发布版本以 npm registry 为准，本文描述 0.2.3 的依赖范围与安全边界，不能仅依据源码版本认定安装包已发布。本项目尚未完成安全审计或双平台实机验收。
 
-## 0.2.2 源码的通讯层依赖
+## 当前源码的通讯层依赖
 
-当前 0.2.2 源码使用标准 npm 运行时依赖 `@quecue/notify-core`，精确版本 `0.1.0`，源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。构建不嵌入通讯库、不链接兄弟仓库源码，npm 自动安装该依赖；这不是已发布 `0.2.1` 的结构说明。通讯库 `0.1.0` 已通过独立 GitHub Actions OIDC 发行，锁文件固定正式 registry 来源和 SHA512；包的 provenance 或完整性校验均不等于安全审计。
+从 0.2.3 起使用标准 npm 运行时依赖 `@quecue/notify-core`，兼容范围 `^0.1.0`（稳定版本 `>=0.1.0 <0.2.0`），源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。构建不嵌入通讯库、不链接兄弟仓库源码，npm 自动安装该依赖。已发布的 `0.2.2` 仍精确依赖 `0.1.0`；版本实际可用性以 npm registry 为准。锁文件仍固定已验证 `0.1.0` 的正式 registry 来源和 SHA512，`npm ci` 精确还原；普通安装可接受兼容版本。允许的版本范围不是安全保证，包的 provenance 或完整性校验也不等于安全审计。
 
 依赖复用不会自动共享凭据或授权，同一个 Bot 的 `getUpdates` 仍只能由一个消费者使用。依赖只从可信来源升级；锁文件的 tarball integrity 校验不等于来源认证或安全审计。
 

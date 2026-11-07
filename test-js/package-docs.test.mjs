@@ -12,7 +12,7 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, 'node-src'), { recursive: true });
   await writeFile(path.join(root, 'node-src/cli.ts'), '');
-  const metadata = { name: '@quecue/dev-notify', version: '0.0.0', dependencies: { '@quecue/notify-core': '0.1.0' } };
+  const metadata = { name: '@quecue/dev-notify', version: '0.0.0', dependencies: { '@quecue/notify-core': '^0.1.0' } };
   await writeFile(path.join(root, 'package.json'), JSON.stringify(metadata));
   const pack = { filename: 'candidate-0.0.0.tgz', integrity: '',
     files: ['dist/cli.js', 'package.json', 'README.md', 'README.en.md', 'SECURITY.md', 'SECURITY.en.md',
@@ -85,9 +85,9 @@ test('发布校验拒绝重复清单条目', async t => {
   f.pack.files.push({ path: 'README.md' });
   await assert.rejects(f.run(), /重复路径/);
 });
-test('发布校验从实际归档检查固定版本运行时依赖', async t => {
+test('发布校验从实际归档检查兼容范围运行时依赖', async t => {
   const f = await fixture(t);
-  for (const version of [undefined, '^0.1.0', 'file:vendor/old.tgz', '0.2.0']) {
+  for (const version of [undefined, '0.1.0', '*', '^0.2.0', 'file:vendor/old.tgz', '0.2.0']) {
     f.metadata.dependencies['@quecue/notify-core'] = version;
     await f.repack();
     await assert.rejects(f.run(), /标准通讯运行时依赖/);

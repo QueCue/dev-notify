@@ -2,11 +2,11 @@
 
 English | [简体中文](SECURITY.md)
 
-The npm package name is `@quecue/dev-notify`, with public source at [QueCue/dev-notify](https://github.com/QueCue/dev-notify). Published versions are authoritative on the npm registry; this document describes the 0.2.2 source, and a source version alone does not establish that an installation package has been published. This project has not completed a security audit or real-machine acceptance on both platforms.
+The npm package name is `@quecue/dev-notify`, with public source at [QueCue/dev-notify](https://github.com/QueCue/dev-notify). Published versions are authoritative on the npm registry; this document describes the dependency range and security boundaries of 0.2.3, and a source version alone does not establish that an installation package has been published. This project has not completed a security audit or real-machine acceptance on both platforms.
 
-## Communication dependency in 0.2.2 source
+## Communication dependency in current source
 
-The current 0.2.2 source uses the standard npm runtime dependency `@quecue/notify-core`, pinned to exactly `0.1.0`, with source at [QueCue/notify-core](https://github.com/QueCue/notify-core). Builds do not embed the library or link sibling source; npm installs it automatically. This does not describe the published `0.2.1` package. The library's `0.1.0` release was published through its own GitHub Actions OIDC identity; the lockfile pins the official registry source and SHA512. Neither provenance nor integrity verification constitutes a security audit.
+Starting with 0.2.3, the standard npm runtime dependency is `@quecue/notify-core` with compatible range `^0.1.0` (stable releases `>=0.1.0 <0.2.0`), with source at [QueCue/notify-core](https://github.com/QueCue/notify-core). Builds do not embed the library or link sibling source; npm installs it automatically. The published `0.2.2` still requires exact `0.1.0`; actual version availability is authoritative on the npm registry. The lockfile still pins the tested `0.1.0` with its official registry source and SHA512 for exact `npm ci` restoration; normal installation permits compatible releases. A permitted version range is not a security guarantee, and neither provenance nor integrity verification constitutes a security audit.
 
 Reusing a dependency does not automatically share credentials or authorization, and a bot's `getUpdates` must still have only one consumer. Upgrade dependencies only from trusted sources; tarball integrity checks in the lockfile do not establish source authenticity or constitute a security audit.
 

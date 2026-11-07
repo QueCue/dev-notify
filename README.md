@@ -6,11 +6,11 @@
 
 **npm 包名为 `@quecue/dev-notify`，支持通用通知、Claude Code 远程回复，以及本机与 Telegram 双端答题和结果反馈。** 源码仓库：[QueCue/dev-notify](https://github.com/QueCue/dev-notify)。版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本和发布标签以 npm registry 为准，源码更新不等同于已发布。
 
-### 0.2.2 源码的通讯层依赖
+### 当前源码的通讯层依赖
 
-当前 0.2.2 源码将 Telegram／飞书通讯层提取为标准 npm 运行时依赖 `@quecue/notify-core`，精确版本为 `0.1.0`，源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。此结构不代表已发布的 `0.2.1` 包。
+从 0.2.3 起使用标准 npm 运行时依赖 `@quecue/notify-core`，范围为 `^0.1.0`，允许 `>=0.1.0 <0.2.0` 的稳定版本，源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。已发布的 `0.2.2` 仍精确依赖 `0.1.0`；版本实际可用性以 npm registry 为准。
 
-依赖由 npm 安装，构建只编译本应用，不复制通讯库或链接兄弟仓库源码。npm 用户无需手动安装通讯库。`@quecue/notify-core@0.1.0` 已通过 GitHub Actions 发布，锁文件固定其 registry 来源和 integrity；源码开发使用 `npm ci --ignore-scripts` 还原依赖。
+依赖由 npm 安装，构建只编译本应用，不复制通讯库或链接兄弟仓库源码。npm 用户无需手动安装通讯库。`@quecue/notify-core@0.1.0` 已通过 GitHub Actions 发布，锁文件仍固定已验证的 `0.1.0`、registry 来源和 integrity；源码开发使用 `npm ci --ignore-scripts` 精确还原，不会因为版本范围放宽自动更新锁文件。正常安装允许兼容版本，不保证每次升级都会重新下载依赖或强制选择最新补丁。
 
 ## 安装与使用
 

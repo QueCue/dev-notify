@@ -30,8 +30,8 @@ npm view @quecue/dev-notify dist-tags versions --json --registry=https://registr
 ## 常规新版本
 
 1. 在本仓库执行 `npm ci --ignore-scripts`、`npm test`，并检查变更记录和中英文说明。
-2. 选择未发布的新版本，同步更新 package.json／package-lock、`node-src/cli.ts` 的 `VERSION` 和 CHANGELOG。通讯层提取的发行准备版本为 `0.2.2`；不能覆盖已有的 `0.2.1` 或其他历史版本。
-3. 将源码、精确运行时依赖声明、registry 锁文件和发布所需脚本纳入同一版本提交。通讯库源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。先确认 `@quecue/notify-core@0.1.0` 已在 npm 可用，再生成并核验锁文件；CI 通过 npm 安装，不读取兄弟仓库或 vendor tarball。
+2. 选择未发布的新版本，同步更新 package.json／package-lock、`node-src/cli.ts` 的 `VERSION` 和 CHANGELOG。`0.2.2` 已发布；后续依赖范围调整等变更必须使用新版本，不能覆盖历史版本。
+3. 将源码、运行时依赖范围、registry 锁文件和发布所需脚本纳入同一版本提交。当前通讯依赖范围为 `^0.1.0`，锁文件仍固定已验证的 `0.1.0`。通讯库源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。先确认 `@quecue/notify-core@0.1.0` 已在 npm 可用，再生成并核验锁文件；CI 通过 npm 安装，不读取兄弟仓库或 vendor tarball。
 4. 在本地生成并校验候选包：
 
    ```sh
@@ -53,7 +53,7 @@ npm view @quecue/dev-notify dist-tags versions --json --registry=https://registr
 
 手动任务构建的是工作流运行提交，而非静默切换到输入标签。与标签相比，仅允许 `.github/` 和 `test-js/` 的非包内容修正；其余源码、脚本、依赖声明、锁文件和文档须与标签一致。若当前分支已有其他变更，使用旧标签会被拒绝，应准备新版本，不能删除或重打历史标签。
 
-整个流程依次进行版本门禁、依赖还原、测试、构建文件清单和 SHA512 校验，随后上传同一个已验证 tarball，再由独立任务发布。`scripts/verify-package.mjs` 同时用于本地和 CI，校验 CLI 文件清单及归档中精确的通讯运行时依赖声明；不能为了通过检查而放开任意 dist 文件。
+整个流程依次进行版本门禁、依赖还原、测试、构建文件清单和 SHA512 校验，随后上传同一个已验证 tarball，再由独立任务发布。`scripts/verify-package.mjs` 同时用于本地和 CI，校验 CLI 文件清单及归档中通讯运行时依赖的兼容范围声明；不能为了通过检查而放开任意 dist 文件。
 
 ## 失败与重跑边界
 

@@ -6,11 +6,11 @@ Cross-platform developer task notification tool written in **TypeScript / Node.j
 
 **The npm package name is `@quecue/dev-notify`, with general notifications, Claude Code remote replies, and local/Telegram two-sided question answering and result feedback.** Source repository: [QueCue/dev-notify](https://github.com/QueCue/dev-notify). For changes and upgrade notes, see [CHANGELOG.en.md](CHANGELOG.en.md); published versions and distribution tags are authoritative on the npm registry, and source changes do not constitute a release.
 
-### Communication dependency in 0.2.2 source
+### Communication dependency in current source
 
-The current 0.2.2 source extracts Telegram/Feishu communication into the standard npm runtime dependency `@quecue/notify-core`, pinned to exactly `0.1.0`. Source: [QueCue/notify-core](https://github.com/QueCue/notify-core). This structure does not describe the published `0.2.1` package.
+Starting with 0.2.3, the standard npm runtime dependency is `@quecue/notify-core` with range `^0.1.0`, allowing stable releases `>=0.1.0 <0.2.0`. Source: [QueCue/notify-core](https://github.com/QueCue/notify-core). The published `0.2.2` still requires exact `0.1.0`; actual version availability is authoritative on the npm registry.
 
-npm installs the dependency; builds compile only this application without copying the communication library or linking sibling source. npm users do not install the library manually. `@quecue/notify-core@0.1.0` has been published through GitHub Actions. The lockfile pins its registry source and integrity; use `npm ci --ignore-scripts` for source development.
+npm installs the dependency; builds compile only this application without copying the communication library or linking sibling source. npm users do not install the library manually. `@quecue/notify-core@0.1.0` has been published through GitHub Actions. The lockfile still pins the tested `0.1.0`, its registry source and integrity. Source development uses `npm ci --ignore-scripts` for exact restoration; widening the range does not automatically update the lockfile. Normal installation permits compatible releases but does not guarantee a fresh download or the newest patch on every upgrade.
 
 ## Installation and usage
 

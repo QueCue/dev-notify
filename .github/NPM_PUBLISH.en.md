@@ -30,8 +30,8 @@ Supported OIDC publishing of a public package from a public GitHub repository ca
 ## Normal new releases
 
 1. Run `npm ci --ignore-scripts` and `npm test` in this repository. Review release notes and both language versions.
-2. Select an unpublished version and update package.json, package-lock, `VERSION` in `node-src/cli.ts`, and CHANGELOG together. The communication extraction is being prepared as `0.2.2`; never overwrite the existing `0.2.1` or another historical version.
-3. Include source, exact runtime dependency declarations, the registry lockfile and build/release scripts in the versioned commit. Library source: [QueCue/notify-core](https://github.com/QueCue/notify-core). First confirm `@quecue/notify-core@0.1.0` is available on npm, then generate and verify the lockfile. CI installs through npm without reading a sibling checkout or vendor tarball.
+2. Select an unpublished version and update package.json, package-lock, `VERSION` in `node-src/cli.ts`, and CHANGELOG together. `0.2.2` is already published; subsequent dependency-range changes require a new version rather than overwriting historical versions.
+3. Include source, runtime dependency ranges, the registry lockfile and build/release scripts in the versioned commit. The current communication dependency range is `^0.1.0`; the lockfile still pins the tested `0.1.0`. Library source: [QueCue/notify-core](https://github.com/QueCue/notify-core). First confirm `@quecue/notify-core@0.1.0` is available on npm, then generate and verify the lockfile. CI installs through npm without reading a sibling checkout or vendor tarball.
 4. Generate and verify the candidate locally:
 
    ```sh
@@ -53,7 +53,7 @@ Select a branch containing the workflow in Actions → Publish npm → Run workf
 
 A manual run builds its actual workflow commit; it does not silently check out the entered tag. Only non-package changes under `.github/` and `test-js/` may differ from that tag. Other source, scripts, dependency declarations, lockfiles and documents must match. A branch with other changes must prepare a new version; never delete or retag a historical release.
 
-The workflow checks version identity, restores dependencies, tests, verifies compiled file inventory/SHA512, then transfers the same verified tarball to the publishing job. `scripts/verify-package.mjs` is shared by local verification and CI and checks the CLI file inventory and the exact communication runtime dependency in the archive metadata. Do not permit arbitrary dist files to bypass this check.
+The workflow checks version identity, restores dependencies, tests, verifies compiled file inventory/SHA512, then transfers the same verified tarball to the publishing job. `scripts/verify-package.mjs` is shared by local verification and CI and checks the CLI file inventory and the compatible communication runtime dependency range in the archive metadata. Do not permit arbitrary dist files to bypass this check.
 
 ## Failures and reruns
 

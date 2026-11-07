@@ -18,7 +18,7 @@ import { updatePackage } from './update.js';
 import { postUpdate } from './maintenance.js';
 import { joinList, localeName, parseLocale, resolveLocale, setLocale, t, type Locale } from './i18n.js';
 
-export const VERSION = '0.2.2';
+export const VERSION = '0.2.3';
 const helpText = () => t('cli.help', { version: VERSION });
 function rawLang(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {

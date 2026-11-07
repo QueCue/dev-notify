@@ -2,6 +2,11 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.3 — 2026-11-07
+
+- Change `@quecue/notify-core` from exact `0.1.0` to the compatible range `^0.1.0`, allowing stable releases `>=0.1.0 <0.2.0`. The lockfile still pins the tested `0.1.0`; update package validation and tests accordingly. This does not change the published `0.2.2`.
+- Regression on Windows x64 / Node 24 totals 219 tests: 218 passed, 0 failed, and 1 opt-in native credential test skipped; this does not establish real-machine acceptance on every platform.
+
 ## 0.2.2 — 2026-11-07
 
 Communication dependency extraction, Windows file-replacement fixes, and documentation updates. Actual version availability is authoritative on the npm registry; the changes below are not included in `0.2.1`.
