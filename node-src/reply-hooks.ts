@@ -6,6 +6,7 @@ import { findSession } from './reply-platform.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
 import { bridgeStatus, startBridge } from './reply-bridge.js';
+import { ReplyPreparationError } from './notification-diagnostics.js';
 import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
 import { makePlan, deliver, type Message, type Plan } from './channels.js';
 import { completeToolCall, endSessionInteractions, finishInteraction, matchingCall, registerToolCall } from './reply-outcomes.js';
@@ -105,7 +106,10 @@ export async function attachReply(message: Message, data: any, file: string, opt
   const ready = options.bridge ? await options.bridge(file, options.env ?? process.env)
     : (await bridgeStatus(file)).ready || await startBridge(file, options.env);
   if (!ready) { options.err?.(t('reply.bridgeNotReadyButton')); return null; }
-  const api = apiFor(access, options), bot = await api('getMe', {});
+  const api = apiFor(access, options);
+  let bot;
+  try { bot = await api('getMe', {}); }
+  catch (error) { throw new ReplyPreparationError(error); }
   if (typeof bot?.username !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(bot.username)) throw new ConfigError(t('reply.botUsernameInvalid'));
   const token = randomBytes(16).toString('hex');
   await stateTransaction(access, state => { state.entries['token:' + token] = { session: target.session, epoch: targetEpoch(target), updated: Date.now() }; });

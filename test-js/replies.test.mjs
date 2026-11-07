@@ -568,6 +568,47 @@ test('完成通知每段带按钮、只授权私聊可用；飞书跳转；每�
   const feishu = makePlan('feishu', message, ctx.access.config);
   assert.ok(feishu.items.every(i => i.payload.card.elements.some(e => e.tag === 'action')));
 });
+for (const scenario of [
+  { name: '桥接未就绪仍发送双渠道普通通知', bridge: false, identity: true, telegram: true },
+  { name: '身份查询失败不误报桥接故障且普通通知仍发送', bridge: true, identity: false, telegram: true },
+  { name: '身份查询及Telegram投递失败时仅飞书成功且无按钮', bridge: true, identity: false, telegram: false },
+  { name: '桥接未就绪及Telegram投递失败时仅飞书成功且无按钮', bridge: false, identity: true, telegram: false },
+  { name: '恢复后双渠道带按钮且逐段建立映射', bridge: true, identity: true, telegram: true },
+]) test(scenario.name, async t => {
+  const ctx = await temp(t);
+  await atomicJson(ctx.file, { ...CONFIG, telegram: { enabled: true, chat_ids: ['111'] }, feishu: { enabled: true } });
+  const env = { ...ctx.env, FEISHU_WEBHOOK: 'https://open.feishu.cn/open-apis/bot/v2/hook/FAKE_ONLY' };
+  const received = [], errors = [], attempts = [];
+  const { t: translate } = await import('../dist/i18n.js');
+  await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Stop', session_id: TARGET.session,
+    last_assistant_message: '隔离测试', cwd: TARGET.cwd })), ctx.file, {
+    env, err: text => errors.push(text),
+    reply: { session: async () => TARGET, bridge: async () => scenario.bridge, api: () => async () => {
+      if (!scenario.identity) throw new TransportError('FAKE_SECRET https://fake.invalid/bot123');
+      return { username: 'FakeTestBot' };
+    } },
+    send: async (plan, config) => deliver(plan, config, async (_url, payload) => {
+      attempts.push(plan.channel);
+      if (plan.channel === 'telegram' && !scenario.telegram) throw new TransportError(translate('channels.network'));
+      received.push({ channel: plan.channel, button: plan.channel === 'telegram' ? !!payload.reply_markup
+        : payload.card.elements.some(element => element.tag === 'action') });
+      return plan.channel === 'telegram' ? { ok: true, result: { message_id: 900 } } : { code: 0 };
+    }),
+  });
+  assert.deepEqual(attempts, ['telegram', 'feishu']); // 不因失败自动重发，也不跳过普通 Telegram 通知。
+  const button = scenario.bridge && scenario.identity;
+  assert.deepEqual(received, [...(scenario.telegram ? [{ channel: 'telegram', button }] : []), { channel: 'feishu', button }]);
+  const text = errors.join('\n');
+  assert.ok(!/FAKE_SECRET|fake\.invalid|bot123/.test(text));
+  if (!scenario.bridge) assert.match(text, /桥接还没有就绪/);
+  else if (!scenario.identity) { assert.match(text, /getMe.*网络请求失败/); assert.doesNotMatch(text, /桥接还没有就绪/); }
+  if (!scenario.telegram) assert.match(text, /telegram.*API 确认 0\/1.*网络请求失败/);
+  if (button) {
+    assert.deepEqual(errors, []);
+    assert.ok((await snapshot(ctx.access)).entries['tg:111:900']);
+  }
+});
+
 test('桥接不就绪不展示假按钮；映射落盘失败不重发已发送段', async t => {
   const ctx = await temp(t), msg = { title: '完成', content: '正文', footer: '', level: 'success' };
   assert.equal(await attachReply(msg, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file,

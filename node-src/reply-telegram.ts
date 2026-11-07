@@ -2,6 +2,7 @@ import { createTelegramApi, TelegramApiError } from '@quecue/notify-core';
 import { requestJson, type Request } from './channels.js';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
+import { TelegramRequestError } from './notification-diagnostics.js';
 
 export type TelegramApi = (method: string, payload: Record<string, unknown>) => Promise<any>;
 export function telegramApi(token: string, request: Request = requestJson): TelegramApi {
@@ -11,8 +12,7 @@ export function telegramApi(token: string, request: Request = requestJson): Tele
     try { return await call(method, payload); }
     catch (error) {
       if (error instanceof TelegramApiError) {
-        if (error.code === 409) throw new ConfigError(t('reply.telegramConflict'));
-        throw new ConfigError(t('reply.telegramRequestFailed'));
+        throw new TelegramRequestError(error.code);
       }
       throw error;
     }

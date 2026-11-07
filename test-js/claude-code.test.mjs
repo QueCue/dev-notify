@@ -409,6 +409,43 @@ test('单渠道失败不泄漏错误且不阻止另一个渠道，hook 不输出
   } });
   assert.deepEqual(called, ['telegram', 'feishu']); assert.equal(output.length, 1); assert.ok(!output.join().includes('TEST_ONLY'));
 });
+test('通知明确拒绝与未知错误安全分类，继续发送飞书且不重试', async t => {
+  const ctx = await temp(t);
+  await writeFile(ctx.config, JSON.stringify({ ...CONFIG, feishu: { enabled: true } }));
+  const env = { ...ctx.env, FEISHU_WEBHOOK: 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_ONLY' };
+  for (const rejected of [true, false]) {
+    const output = [], calls = [];
+    await dispatchClaudeHook(json(stop()), ctx.config, { env, err: text => output.push(text),
+      send: async (plan, config) => deliver(plan, config, async () => {
+        calls.push(plan.channel);
+        if (plan.channel === 'telegram') {
+          if (!rejected) throw new Error('TEST_SECRET https://fake.invalid/token');
+          return { ok: false, error_code: 403, description: 'TEST_SECRET' };
+        }
+        return { code: 0 };
+      }),
+    });
+    assert.deepEqual(calls, ['telegram', 'feishu']);
+    assert.equal(output.length, 1);
+    assert.match(output[0], /telegram.*API 确认 0\/1/);
+    assert.match(output[0], rejected ? /渠道明确拒绝/ : /原因未分类/);
+    assert.doesNotMatch(output[0], /TEST_SECRET|fake\.invalid|403/); // 不猜测已被公共库丢弃的错误码。
+  }
+});
+test('API成功但发送后映射失败不会误报未送达或重复发送', async t => {
+  const ctx = await temp(t), output = [];
+  let sends = 0;
+  await dispatchClaudeHook(json(stop()), ctx.config, { env: ctx.env, err: text => output.push(text),
+    send: async (plan, config) => {
+      plan.onSent = async () => { throw new Error('TEST_SECRET'); };
+      return deliver(plan, config, async () => { sends++; return { ok: true, result: { message_id: 123 } }; });
+    },
+  });
+  assert.equal(sends, 1);
+  assert.equal(output.length, 1);
+  assert.match(output[0], /投递或发送后处理.*API 确认 1\/1/);
+  assert.doesNotMatch(output[0], /TEST_SECRET/);
+});
 test('hook 配置或投递失败退出 0，绝不以退出码 2 阻止 Claude 停止', async t => {
   const ctx = await temp(t);
   for (const args of [['integration', 'claude-code', 'hook'], ['integration', 'claude-code', 'hook', '--secret', 'TEST_ONLY']]) {

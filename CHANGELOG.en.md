@@ -2,6 +2,13 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.5 — 2026-11-07
+
+- Distinguish Telegram `getMe` failures during reply-button preparation, bridge unreadiness, and notification-delivery failures. Retain bounded API error codes and report safe delivery categories and API-acknowledged part counts, without exposing underlying exceptions or server bodies. Do not infer exact send error codes discarded by the communication library.
+- Add isolated regressions for Telegram failure with successful buttonless Feishu delivery, bridge unreadiness with ordinary delivery on both channels, and recovery with buttons on both channels. No new retries, replays, or authorization.
+- Cover explicit channel rejection, unknown exceptions, and successful API delivery followed by local message-mapping failure without incorrectly claiming non-delivery or resending. Windows x64 / Node 24 totals 247 tests: 246 passed, 0 failed, and 1 opt-in native credential test skipped; not macOS real-machine acceptance.
+- This release improves diagnostics; it does not establish or fix the specific cause of historical missing notifications on any particular device.
+
 ## 0.2.4 — 2026-11-07
 
 - Recover valid bot locks belonging to confirmed exited processes so a crashed reply bridge does not permanently remove Reply to Claude buttons. Live processes, reused PIDs, unknown permissions, and damaged locks are not preempted; concurrent recovery is serialized.

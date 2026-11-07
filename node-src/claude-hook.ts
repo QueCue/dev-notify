@@ -7,6 +7,7 @@ import { t } from './i18n.js';
 import { shouldNotify, type NotifyEvent } from './notifications.js';
 import { transcriptEndTime } from './hook-time.js';
 import { findSessionName } from './reply-platform.js';
+import { ReplyPreparationError, safeDeliveryReason, safeFailureReason } from './notification-diagnostics.js';
 import { lifecycleHook, interactionHook, attachReply, mapReplies, notificationCoverage, type ReplyHookOptions } from './reply-hooks.js';
 
 export const MAX_HOOK_BYTES = 8 * 1024 * 1024;
@@ -120,7 +121,7 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
   }
   let binding = null;
   try { binding = await attachReply(notification, data, configFile, options); }
-  catch { context.err(t('hook.replyNotReady')); }
+  catch (error) { context.err(error instanceof ReplyPreparationError ? error.message : t('hook.replyNotReady')); }
   let covered = { telegram: [] as string[], feishu: false };
   try { covered = await notificationCoverage(data, configFile, config, options); }
   catch { context.err(t('hook.coverageFailed')); }
@@ -138,8 +139,10 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
       }
       if (binding) mapReplies(plan, binding);
       const result = await context.send(plan, config);
-      if (!result.ok) context.err(t('hook.sendIncomplete', { channel }));
-    } catch { context.err(t('hook.sendFailed', { channel })); }
+      if (!result.ok) context.err(t('hook.sendIncompleteDetail', {
+        channel, sent: result.sent, planned: result.planned, reason: safeDeliveryReason(result.error),
+      }));
+    } catch (error) { context.err(t('hook.sendFailedDetail', { channel, reason: safeFailureReason(error) })); }
   }
   if (!channels) throw new ConfigError(t('hook.noChannels'));
 }
