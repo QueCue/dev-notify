@@ -2,7 +2,7 @@
 
 简体中文 | [English](SECURITY.en.md)
 
-npm 包名为 `@quecue/dev-notify`，公开源码见 [QueCue/dev-notify](https://github.com/QueCue/dev-notify)。发布版本以 npm registry 为准，本文描述 0.2.4 的依赖范围与安全边界，不能仅依据源码版本认定安装包已发布。本项目尚未完成安全审计或双平台实机验收。
+npm 包名为 `@quecue/dev-notify`，公开源码见 [QueCue/dev-notify](https://github.com/QueCue/dev-notify)。发布版本以 npm registry 为准，本文描述 0.2.6 的依赖范围与安全边界，不能仅依据源码版本认定安装包已发布。本项目尚未完成安全审计或双平台实机验收。
 
 ## 当前源码的通讯层依赖
 
@@ -54,6 +54,7 @@ npm 包名为 `@quecue/dev-notify`，公开源码见 [QueCue/dev-notify](https:/
 
 - `reply setup` 单独选择明确的私聊 chat_id，且必须在当前通知名单中；群聊、非私聊、发送者与 chat_id 不一致、Bot 消息和未授权的通知接收人都不会获得输入权。飞书只提供 Telegram deep link，知道链接并不构成授权。`/chatid` 只返回发件人本人的私聊 ID，不授予权限。
 - 授权绑定 Bot 指纹、随机代次、当前有效用户及可选的权限能力。切换 Token、撤销用户或重新授权时，不会继承旧路由；操作前及提交前都会重读授权。撤销无法撤回已经开始的原生输入，也无法消除检查与调用之间的全部竞态。
+- 0.2.6 源码还检查 hooks 的 Node/CLI 文件可访问性及 POSIX Node 执行权限，但不执行这些文件来探测，不能保证 Windows 执行策略或运行会话实际加载。会话查询暂不可用时标记为未核验并暂停按钮、输入及权限回传，不以此删除未提交队列；原有效期、新本地输入取消、明确结束和防重放规则仍生效。已登记提交的输入即使随后查询失败也不会重新排队。
 - 每次读取授权都会检查绑定当前通知配置的完整 hooks；缺少生命周期、Stop 异步或用户级禁用时，会拒绝回复。普通输入还要求实际观察到该会话的 UserPromptSubmit。用户级文件检查无法证明项目/托管策略或运行会话已经加载，请在 `/hooks` 确认；不会承诺消除所有运行时竞态。
 - 消息每段发送成功后，会把消息 ID 保存到会话映射；映射失败会报告部分失败，不会重发已发送的段落。会话必须匹配 PID/出生标识/TTY；会话切换、关闭、目标不唯一时会拒绝。支持范围仅 Windows 原生 claude 控制台、macOS 前台 claude 的 Ghostty/tmux；不会为 WSL/SSH/VS Code 等终端猜测路由。
 - 普通回复在工作中只排队，Stop 后再尝试；5 分钟过期、本地新输入或目标变化会取消。单条最多 4000 Unicode 字符，清理控制字符/换行后一次输入；不会按 shell 执行，不会截断，也不会自动拆成多个任务。控制台共享且有多个 claude 进程时会拒绝；本地用户同时编辑或切换终端仍可能竞争，原生输入与 UI 活动并非原子互斥。
@@ -72,7 +73,7 @@ npm 包名为 `@quecue/dev-notify`，公开源码见 [QueCue/dev-notify](https:/
 ## npm 与测试
 
 - 运行时有原生凭据依赖，版本和平台 optional 包锁定于 `package-lock.json`。请保留 optional 依赖。项目没有 postinstall、自写二进制下载或后台启动脚本。
-- 0.2.4 源码的 npm 白名单仅包含本应用 CLI 编译 JS、README、SECURITY、CHANGELOG、LICENSE 和 package.json。通讯库副本、测试、真实配置、日志、密文及依赖 tarball 不进入发布包；已发布版本以实际包内容为准。
+- 0.2.6 源码的 npm 白名单仅包含本应用 CLI 编译 JS、README、SECURITY、CHANGELOG、LICENSE 和 package.json。通讯库副本、测试、真实配置、日志、密文及依赖 tarball 不进入发布包；已发布版本以实际包内容为准。
 - 第三方原生包带有其许可证与 Rust 依赖声明。发布及依赖升级时应核对供应链和许可；固定版本并不等同于完成审计。
 - 默认测试使用假凭据、临时目录和模拟系统后端、网络。`DEV_NOTIFY_NATIVE_TEST=1` 会显式开启 Windows 原生测试，只创建本次随机 ID 的假条目，结束后清理，不读取用户现有条目。
 - npm 卸载不会自动删除用户配置或凭据。需要清理时，请先运行交互清理命令；卸载生命周期脚本不会偷偷操作用户的系统存储。

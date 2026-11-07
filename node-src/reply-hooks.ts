@@ -2,11 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { ConfigError, type Config, type Env } from './config.js';
 import { t } from './i18n.js';
 import { accessReplies, botKey, digest, stateTransaction, targetEpoch, type ReplyAccess, type SessionTarget } from './reply-state.js';
-import { findSession } from './reply-platform.js';
+import { lookupSession, SessionLookupError, type SessionLookup } from './reply-platform.js';
+import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
 import { bridgeStatus, startBridge } from './reply-bridge.js';
-import { ReplyPreparationError } from './notification-diagnostics.js';
+import { ReplyPreparationError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
 import { makePlan, deliver, type Message, type Plan } from './channels.js';
 import { completeToolCall, endSessionInteractions, finishInteraction, matchingCall, registerToolCall } from './reply-outcomes.js';
@@ -14,16 +15,30 @@ import { completeToolCall, endSessionInteractions, finishInteraction, matchingCa
 export interface ReplyHookOptions {
   env?: Env;
   session?: (id: string) => Promise<SessionTarget | null>;
+  sessionLookup?: (id: string) => Promise<SessionLookup>;
   api?: (access: ReplyAccess) => TelegramApi;
   send?: typeof deliver;
   bridge?: (file: string, env: Env) => Promise<boolean>;
   err?: (text: string) => void;
+  replyDiagnostic?: (code: ReplyDiagnosticCode) => void;
   response?: (value: Record<string, any>) => void;
   wait?: typeof waitInteraction;
 }
 const apiFor = (access: ReplyAccess, options: ReplyHookOptions) => (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
+async function inspectTarget(data: any, options: ReplyHookOptions): Promise<SessionLookup> {
+  try {
+    if (options.sessionLookup) return await options.sessionLookup(data.session_id);
+    if (options.session) {
+      const target = await options.session(data.session_id);
+      return target ? { status: 'found', target } : { status: 'missing' };
+    }
+    return await lookupSession(data.session_id, { env: options.env });
+  } catch { return { status: 'unavailable' }; }
+}
 async function getTarget(data: any, options: ReplyHookOptions): Promise<SessionTarget | null> {
-  return (options.session ?? (id => findSession(id, { env: options.env })))(data.session_id);
+  const result = await inspectTarget(data, options);
+  if (result.status === 'unavailable') throw new SessionLookupError();
+  return result.status === 'found' ? result.target : null;
 }
 export async function lifecycleHook(data: any, file: string, options: ReplyHookOptions = {}): Promise<void> {
   const event = data.hook_event_name;
@@ -31,12 +46,27 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
   const access = await accessReplies(file, options.env);
   if (!access) return;
   if (event === 'Stop' && data.stop_hook_active === true) return;
-  const target = event === 'SessionEnd' ? null : await getTarget(data, options);
+  const before = event === 'SessionEnd' ? null : await stateTransaction(access, state => state.sessions[data.session_id]);
+  const inspection = event === 'SessionEnd' ? null : await inspectTarget(data, options);
+  const target = inspection?.status === 'found' ? inspection.target : null;
+  const confirmedGone = inspection?.status === 'missing' && !!before && processState(before.pid) === 'dead';
+  if (!target && event !== 'SessionEnd') options.err?.(t('reply.sessionUnavailable'));
   const receipt = await stateTransaction(access, state => {
     const previous = state.sessions[data.session_id];
-    if (event === 'SessionEnd' || !target) {
+    if (event === 'SessionEnd' || (confirmedGone && previous && before && targetEpoch(previous) === targetEpoch(before))) {
       delete state.sessions[data.session_id]; delete state.pending[data.session_id];
       endSessionInteractions(state, data.session_id, t('reply.endSessionReason'));
+      return null;
+    }
+    if (!target) {
+      if (previous) { previous.unverified = true; previous.updated = Date.now(); }
+      // 观察到新的本地输入时仍取消旧排队任务，不能在恢复核验后抢先注入。
+      if (event === 'UserPromptSubmit' || event === 'SessionStart') {
+        if (state.pending[data.session_id]?.phase === 'queued') delete state.pending[data.session_id];
+        if (previous) previous.working = true;
+      }
+      if (event === 'Stop' || event === 'UserPromptSubmit' || event === 'SessionStart')
+        endSessionInteractions(state, data.session_id, t('reply.endTurnReason'));
       return null;
     }
     // 同进程 / 同 TTY 已切换会话时，旧映射不再允许输入。
@@ -84,7 +114,7 @@ export async function notificationCoverage(data: any, file: string, config: Conf
   return stateTransaction(access, state => {
     const target = state.sessions[data.session_id];
     const call = target?.latestCall && state.calls[target.latestCall];
-    if (!target || !call || call.session !== target.session || call.epoch !== targetEpoch(target) || call.tool !== 'AskUserQuestion'
+    if (!target || target.unverified === true || !call || call.session !== target.session || call.epoch !== targetEpoch(target) || call.tool !== 'AskUserQuestion'
       || typeof data.tool_use_id === 'string' && data.tool_use_id !== call.id
       || typeof data.tool_name === 'string' && data.tool_name !== call.tool
       || typeof data.prompt_id === 'string' && data.prompt_id !== call.prompt) return none;
@@ -97,15 +127,25 @@ export async function notificationCoverage(data: any, file: string, config: Conf
   });
 }
 export async function attachReply(message: Message, data: any, file: string, options: ReplyHookOptions = {}): Promise<{ access: ReplyAccess; token: string } | null> {
+  if (data.hook_event_name !== 'Stop') return null;
   const access = await accessReplies(file, options.env);
-  if (!access || data.hook_event_name !== 'Stop') return null;
+  if (!access) { options.replyDiagnostic?.('disabled'); return null; }
+  const skip = (reason: ReplyDiagnosticCode) => {
+    options.replyDiagnostic?.(reason);
+    options.err?.(t('reply.buttonSkipped', { reason }));
+    return null;
+  };
   const target = await getTarget(data, options);
-  if (!target) return null;
+  if (!target) return skip('session-unverified');
   const saved = await stateTransaction(access, state => state.sessions[target.session]);
-  if (!saved || saved.working || !saved.tracked || targetEpoch(saved) !== targetEpoch(target)) return null;
+  if (!saved) return skip('state-missing');
+  if (saved.unverified === true) return skip('session-unverified');
+  if (saved.working) return skip('session-working');
+  if (!saved.tracked) return skip('input-unobserved');
+  if (targetEpoch(saved) !== targetEpoch(target)) return skip('identity-changed');
   const ready = options.bridge ? await options.bridge(file, options.env ?? process.env)
     : (await bridgeStatus(file)).ready || await startBridge(file, options.env);
-  if (!ready) { options.err?.(t('reply.bridgeNotReadyButton')); return null; }
+  if (!ready) { options.replyDiagnostic?.('bridge-unready'); options.err?.(t('reply.bridgeNotReadyButton')); return null; }
   const api = apiFor(access, options);
   let bot;
   try { bot = await api('getMe', {}); }
@@ -114,6 +154,7 @@ export async function attachReply(message: Message, data: any, file: string, opt
   const token = randomBytes(16).toString('hex');
   await stateTransaction(access, state => { state.entries['token:' + token] = { session: target.session, epoch: targetEpoch(target), updated: Date.now() }; });
   message.reply = { token, url: `https://t.me/${bot.username}?start=${token}`, users: access.policy.users };
+  options.replyDiagnostic?.('attached');
   return { access, token };
 }
 export function mapReplies(plan: Plan, binding: { access: ReplyAccess; token: string }): void {
@@ -141,7 +182,7 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
     ? await stateTransaction(access, state => state.sessions[data.session_id]) : null;
   // 登记阶段复用生命周期元数据；真正开启远程交互时仍重新核验进程身份。
   const target = cached ?? await getTarget(data, options);
-  if (!target) { options.err?.(t('reply.noSession')); return; }
+  if (!target || target.unverified === true) { options.err?.(t('reply.noSession')); return; }
   if (data.hook_event_name === 'PreToolUse') {
     // 只登记调用身份，不发网络请求、不等待远端，原生窗口可以正常出现。
     await registerToolCall(access, target, data); return;

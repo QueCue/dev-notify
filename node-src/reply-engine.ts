@@ -3,7 +3,7 @@ import { ConfigError } from './config.js';
 import { t } from './i18n.js';
 import { digest, targetEpoch, stateTransaction, TTL, type ReplyAccess, type Entry, type SessionTarget } from './reply-state.js';
 import { handleInteractionCallback, handleInteractionText, showInteraction } from './reply-interactions.js';
-import { injectReply, sanitizeReply, validateTarget } from './reply-platform.js';
+import { injectReply, sanitizeReply, validateTarget, SessionLookupError } from './reply-platform.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
 
 export const sessionEpoch = targetEpoch;
@@ -23,7 +23,7 @@ function privateUser(message: any, sender: any): string | null {
 export async function resolveEntry(access: ReplyAccess, key: string, context: EngineContext): Promise<{ entry: Entry; target: SessionTarget } | null> {
   const resolved = await stateTransaction(access, state => {
     const entry = state.entries[key], target = entry && state.sessions[entry.session];
-    return entry && target && (target.tracked === true || !!entry.request) && entry.epoch === sessionEpoch(target) && Date.now() - entry.updated < TTL ? { entry, target } : null;
+    return entry && target && target.unverified !== true && (target.tracked === true || !!entry.request) && entry.epoch === sessionEpoch(target) && Date.now() - entry.updated < TTL ? { entry, target } : null;
   });
   if (!resolved || !await (context.validate ?? (target => validateTarget(target)))(resolved.target)) return null;
   return resolved;
@@ -111,7 +111,7 @@ async function processAuthorizedUpdate(access: ReplyAccess, update: any, context
   const id = randomBytes(16).toString('hex');
   const queued = await stateTransaction(access, state => {
     const target = state.sessions[resolved.target.session];
-    if (!target || sessionEpoch(target) !== resolved.entry.epoch) throw new ConfigError(t('reply.sessionChanged'));
+    if (!target || target.unverified === true || sessionEpoch(target) !== resolved.entry.epoch) throw new ConfigError(t('reply.sessionChanged'));
     if (state.pending[target.session] && Date.now() - state.pending[target.session].updated < 5 * 60 * 1000) return null;
     state.pending[target.session] = { hash: textHash(safe), text: safe, epoch: resolved.entry.epoch, id, updated: Date.now(), queued: target.working,
       phase: 'queued', chat, message: message.message_id };
@@ -123,7 +123,8 @@ async function processAuthorizedUpdate(access: ReplyAccess, update: any, context
 }
 export async function drainReplies(access: ReplyAccess, context: EngineContext): Promise<void> {
   const queued = await stateTransaction(access, state => Object.entries(state.pending)
-    .filter(([session, value]) => value.phase === 'queued' && (!state.sessions[session]?.working || Date.now() - value.updated > 5 * 60 * 1000))
+    .filter(([session, value]) => value.phase === 'queued' && (Date.now() - value.updated > 5 * 60 * 1000
+      || (!state.sessions[session]?.working && state.sessions[session]?.unverified !== true)))
     .map(([session, pending]) => ({ target: state.sessions[session], pending })));
   for (const item of queued) {
     const { target, pending } = item;
@@ -136,7 +137,7 @@ export async function drainReplies(access: ReplyAccess, context: EngineContext):
       const text = pending.text;
       const claimed = await stateTransaction(access, state => {
         const actual = state.pending[target.session], active = state.sessions[target.session];
-        if (!actual || actual.id !== pending.id || actual.phase !== 'queued' || active?.working || sessionEpoch(active) !== sessionEpoch(target)) return false;
+        if (!actual || actual.id !== pending.id || actual.phase !== 'queued' || active?.working || active?.unverified === true || sessionEpoch(active) !== sessionEpoch(target)) return false;
         actual.phase = 'submitted'; delete actual.text; return true;
       });
       if (!claimed) continue;
@@ -146,6 +147,15 @@ export async function drainReplies(access: ReplyAccess, context: EngineContext):
       await (context.inject ?? ((value, content) => injectReply(value, content)))(target, text);
       await replyHint(context.api, pending.chat, t('reply.forwardedTitle'), t('reply.forwardedBody'), pending.message);
     } catch (error) {
+      if (error instanceof SessionLookupError) {
+        const paused = await stateTransaction(access, state => {
+          const value = state.pending[target.session], active = state.sessions[target.session];
+          if (value?.id !== pending.id || value.phase !== 'queued') return false;
+          if (active && sessionEpoch(active) === pending.epoch) active.unverified = true;
+          return true;
+        });
+        if (paused) continue; // 未开始注入的任务保留原TTL；已提交/结果未知的任务绝不重新排队。
+      }
       await stateTransaction(access, state => {
         const value = state.pending[target.session];
         if (value?.id === pending.id) { value.phase = 'unknown'; delete value.text; }

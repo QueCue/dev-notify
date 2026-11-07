@@ -1,4 +1,5 @@
-import { readFile, mkdir, open, rename, unlink } from 'node:fs/promises';
+import { readFile, mkdir, open, rename, unlink, stat, access } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,8 @@ export interface IntegrationOptions {
   platform?: NodeJS.Platform;
   runtime?: HookRuntime;
   replace?: typeof rename;
+  lockOpen?: typeof open;
+  runtimeAccess?: (file: string, mode: number) => Promise<void>;
   /** setup 快速路径已在汇总确认中覆盖 hooks 安装，不再重复询问。 */
   confirm?: boolean;
 }
@@ -31,6 +34,7 @@ export interface IntegrationStatus {
   disabled: boolean;
   /** 本工具 hooks 绑定的通知配置路径（去重）。 */
   configs: string[];
+  runtimeIssues: { event: string; kind: 'node' | 'cli'; reason: 'missing' | 'denied' | 'invalid' | 'unavailable' }[];
 }
 const record = (value: unknown): value is Settings => value !== null && typeof value === 'object' && !Array.isArray(value);
 const yes = (value: string) => /^(y|yes)$/i.test(value.trim());
@@ -74,7 +78,8 @@ function owned(hook: Settings): boolean {
     && hook.args[4] === '--config' && typeof hook.args[5] === 'string';
 }
 function describe(file: string, data: Settings): IntegrationStatus {
-  const result = { file, stop: 0, notification: 0, lifecycle: 0, interaction: 0, others: 0, disabled: data.disableAllHooks === true, configs: [] as string[] };
+  const result = { file, stop: 0, notification: 0, lifecycle: 0, interaction: 0, others: 0, disabled: data.disableAllHooks === true,
+    configs: [] as string[], runtimeIssues: [] as IntegrationStatus['runtimeIssues'] };
   for (const event of EVENTS) for (const group of data.hooks?.[event] ?? []) for (const hook of group.hooks) {
     if (owned(hook)) {
       if (!result.configs.includes(hook.args[5])) result.configs.push(hook.args[5]);
@@ -87,9 +92,40 @@ function describe(file: string, data: Settings): IntegrationStatus {
   }
   return result;
 }
+async function runtimeIssues(data: Settings, options: IntegrationOptions, config?: string): Promise<IntegrationStatus['runtimeIssues']> {
+  const issues: IntegrationStatus['runtimeIssues'] = [], checked = new Map<string, IntegrationStatus['runtimeIssues'][number]['reason'] | null>();
+  const platform = options.platform ?? process.platform, paths = platform === 'win32' ? path.win32 : path.posix;
+  const normalize = (file: string) => platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
+  for (const event of EVENTS) for (const group of data.hooks?.[event] ?? []) for (const hook of group.hooks) {
+    if (!owned(hook) || config !== undefined && normalize(hook.args[5]) !== normalize(config)) continue;
+    for (const [kind, file] of [['node', hook.command], ['cli', hook.args[0]]] as const) {
+      const key = JSON.stringify([kind, file]);
+      if (!checked.has(key)) {
+        let reason: IntegrationStatus['runtimeIssues'][number]['reason'] | null = null;
+        if (typeof file !== 'string' || !paths.isAbsolute(file)) reason = 'invalid';
+        else try {
+          if (!(await stat(file)).isFile()) reason = 'invalid';
+          else {
+            await (options.runtimeAccess ?? access)(file, constants.R_OK | (kind === 'node' && platform !== 'win32' ? constants.X_OK : 0));
+            // Windows access() 不足以验证 ACL；仅打开后关闭，不读取文件正文或执行程序。
+            const handle = await open(file, 'r');
+            await handle.close();
+          }
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          reason = code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : code === 'EACCES' || code === 'EPERM' ? 'denied' : 'unavailable';
+        }
+        checked.set(key, reason);
+      }
+      const reason = checked.get(key);
+      if (reason) issues.push({ event, kind, reason });
+    }
+  }
+  return issues;
+}
 export async function claudeCodeStatus(options: IntegrationOptions = {}): Promise<IntegrationStatus> {
-  const file = settingsFile(options);
-  return describe(file, parseSettings(await snapshot(file)));
+  const file = settingsFile(options), data = parseSettings(await snapshot(file));
+  return { ...describe(file, data), runtimeIssues: await runtimeIssues(data, options) };
 }
 export async function replyHooksReady(config: string, options: IntegrationOptions = {}): Promise<boolean> {
   const data = parseSettings(await snapshot(settingsFile(options)));
@@ -103,7 +139,7 @@ export async function replyHooksReady(config: string, options: IntegrationOption
     if (event !== 'Notification' && groups.some((group: Settings) => group.matcher && group.matcher !== '*'
       && group.hooks.includes(matches[0]))) return false;
   }
-  return true;
+  return (await runtimeIssues(data, options, config)).length === 0;
 }
 function merged(data: Settings, config: string | null, runtime: HookRuntime): Settings {
   const target = structuredClone(data);
@@ -134,12 +170,16 @@ async function remove(file: string): Promise<void> {
   try { await unlink(file); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 }
-async function commit(file: string, before: Buffer | null, target: Settings, prompts: Prompts, replace = rename): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+async function commit(file: string, before: Buffer | null, target: Settings, prompts: Prompts, replace = rename, lockOpen = open): Promise<void> {
+  try { await mkdir(path.dirname(file), { recursive: true, mode: 0o700 }); }
+  catch (error) { throw new ConfigError(t(['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '') ? 'claude.settingsWriteDenied' : 'claude.lockFailed')); }
   const lockFile = file + '.dev-notify.lock';
   let lock;
-  try { lock = await open(lockFile, 'wx', 0o600); }
-  catch { throw new ConfigError(t('claude.lockUnavailable')); }
+  try { lock = await lockOpen(lockFile, 'wx', 0o600); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new ConfigError(t(code === 'EEXIST' ? 'claude.lockUnavailable' : code === 'EACCES' || code === 'EPERM' ? 'claude.settingsWriteDenied' : 'claude.lockFailed'));
+  }
   const temporary = path.join(path.dirname(file), `.dev-notify-${randomBytes(16).toString('hex')}.tmp`);
   let created = false;
   try {
@@ -190,7 +230,7 @@ export async function configureClaudeCode(config: string, action: 'install' | 'r
     && !yes(await prompts.text(action === 'install' ? t('claude.confirmInstall') : t('claude.confirmRemove')))) {
     prompts.out(t('claude.cancelled')); return false;
   }
-  await commit(file, before, target, prompts, options.replace);
+  await commit(file, before, target, prompts, options.replace, options.lockOpen);
   prompts.out(action === 'install' ? t('claude.installed') : t('claude.removed'));
   return true;
 }

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
-import { claudeSettingsPath, claudeCodeStatus, configureClaudeCode, HOOK_MARKER, NOTIFICATION_MATCHER, EVENTS } from '../dist/claude-code.js';
+import { claudeSettingsPath, claudeCodeStatus, configureClaudeCode, HOOK_MARKER, NOTIFICATION_MATCHER, EVENTS, replyHooksReady } from '../dist/claude-code.js';
 import { claudeHookMessage, dispatchClaudeHook, readHookInput, MAX_HOOK_BYTES, formatTime } from '../dist/claude-hook.js';
 import { Cancelled } from '../dist/prompts.js';
 import { main } from '../dist/cli.js';
@@ -194,6 +194,58 @@ test('已有写入锁不能被覆盖或移除', async t => {
   const ctx = await temp(t); await save(ctx.file, {}); await writeFile(ctx.file + '.dev-notify.lock', 'other-process');
   await assert.rejects(configureClaudeCode(ctx.config, 'install', ui(['y']), { env: ctx.env }), /锁/);
   assert.equal(await readFile(ctx.file + '.dev-notify.lock', 'utf8'), 'other-process');
+});
+for (const code of ['EEXIST', 'EACCES', 'EPERM', 'ENOSPC']) test(`设置锁错误明确分类：${code}`, async t => {
+  const ctx = await temp(t); await save(ctx.file, { keep: true }); const before = await readFile(ctx.file);
+  await assert.rejects(configureClaudeCode(ctx.config, 'install', ui(['y']), { env: ctx.env,
+    lockOpen: async (_file, flags) => { assert.equal(flags, 'wx'); throw Object.assign(new Error('PRIVATE_ERROR'), { code }); },
+  }), error => {
+    assert.doesNotMatch(error.message, /PRIVATE_ERROR/);
+    assert.match(error.message, code === 'EEXIST' ? /锁已存在/ : code === 'EACCES' || code === 'EPERM' ? /没有权限写入/ : /无法准备/);
+    if (code !== 'EEXIST') assert.doesNotMatch(error.message, /请确认没有安装进程/);
+    return true;
+  });
+  assert.deepEqual(await readFile(ctx.file), before);
+  assert.deepEqual(await readdir(ctx.directory), ['settings.json']);
+});
+for (const kind of ['node', 'cli']) test(`${kind}路径不存在、为目录或相对路径时，hooks不假报就绪`, async t => {
+  const ctx = await temp(t); await configureClaudeCode(ctx.config, 'install', ui(['y']), { env: ctx.env });
+  const original = JSON.parse(await readFile(ctx.file, 'utf8'));
+  for (const [value, reason] of [[path.join(ctx.root, 'MISSING'), 'missing'], [ctx.root, 'invalid'], ['relative-entry', 'invalid']]) {
+    const settings = structuredClone(original);
+    for (const hook of hooks(settings)) { if (kind === 'node') hook.command = value; else hook.args[0] = value; }
+    await save(ctx.file, settings); const before = await readFile(ctx.file);
+    const status = await claudeCodeStatus({ env: ctx.env });
+    assert.equal(status.runtimeIssues.length, 10);
+    assert.ok(status.runtimeIssues.every(issue => issue.kind === kind && issue.reason === reason));
+    assert.equal(await replyHooksReady(ctx.config, { env: ctx.env }), false);
+    const result = await invoke(ctx.env, ['integration', 'claude-code', 'status']);
+    assert.equal(result.code, 1); assert.ok(result.text.includes(kind));
+    assert.deepEqual(await readFile(ctx.file), before);
+  }
+});
+test('hooks路径访问被拒绝单独报告，不执行程序或修改设置', async t => {
+  const ctx = await temp(t); await configureClaudeCode(ctx.config, 'install', ui(['y']), { env: ctx.env });
+  const before = await readFile(ctx.file);
+  const runtimeAccess = async file => { if (file === process.execPath) throw Object.assign(new Error('PRIVATE'), { code: 'EACCES' }); };
+  const status = await claudeCodeStatus({ env: ctx.env, runtimeAccess });
+  assert.ok(status.runtimeIssues.every(issue => issue.kind === 'node' && issue.reason === 'denied'));
+  assert.equal(status.runtimeIssues.length, 10);
+  assert.equal(await replyHooksReady(ctx.config, { env: ctx.env, runtimeAccess }), false);
+  assert.deepEqual(await readFile(ctx.file), before);
+  assert.equal(await replyHooksReady(ctx.config, { env: ctx.env }), true);
+});
+test('其他配置的失效入口不影响当前配置的就绪判断', async t => {
+  const ctx = await temp(t); await configureClaudeCode(ctx.config, 'install', ui(['y']), { env: ctx.env });
+  const settings = JSON.parse(await readFile(ctx.file, 'utf8'));
+  for (const event of EVENTS) {
+    const extra = structuredClone(settings.hooks[event][0].hooks[0]);
+    extra.command = path.join(ctx.root, 'MISSING'); extra.args[5] = path.join(ctx.root, 'other-config.json');
+    settings.hooks[event][0].hooks.push(extra);
+  }
+  await save(ctx.file, settings);
+  assert.equal(await replyHooksReady(ctx.config, { env: ctx.env }), true);
+  assert.equal((await claudeCodeStatus({ env: ctx.env })).runtimeIssues.length, 10);
 });
 test('CLI 单独安装、查询和移除共用同一套确认与配置合并逻辑', async t => {
   const ctx = await temp(t);

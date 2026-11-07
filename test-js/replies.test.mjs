@@ -8,11 +8,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { accessReplies, configureReplies, disableReplies, atomicJson, stateTransaction, policyPath, replyDirectory, botKey, targetEpoch, TTL } from '../dist/reply-state.js';
 import { parseConfig, appPaths } from '../dist/config.js';
-import { processUpdate, drainReplies, textHash } from '../dist/reply-engine.js';
+import { processUpdate, drainReplies, textHash, resolveEntry } from '../dist/reply-engine.js';
 import { lifecycleHook, attachReply, mapReplies, interactionHook, notificationCoverage } from '../dist/reply-hooks.js';
 import { dispatchClaudeHook } from '../dist/claude-hook.js';
 import { createInteraction, showInteraction, waitInteraction, questionsFrom, interactionContent } from '../dist/reply-interactions.js';
-import { processIdentity, findSession, findSessionName, validateTarget, sanitizeReply, injectReply, runCommand } from '../dist/reply-platform.js';
+import { processIdentity, findSession, lookupSession, SessionLookupError, findSessionName, validateTarget, sanitizeReply, injectReply, runCommand } from '../dist/reply-platform.js';
 import { telegramApi } from '../dist/reply-telegram.js';
 import { runBridge, bridgeStatus, stopBridge } from '../dist/reply-bridge.js';
 import { makePlan, deliver, TransportError } from '../dist/channels.js';
@@ -446,6 +446,144 @@ test('未观察到该会话 UserPromptSubmit 时不开放普通终端回复', as
   await lifecycleHook({ hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, options);
   assert.ok(await attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, options));
 });
+for (const reason of ['session-unverified', 'state-missing', 'session-working', 'input-unobserved', 'identity-changed'])
+test(`不带按钮时明确记录原因：${reason}`, async t => {
+  const ctx = await temp(t), codes = [], errors = [];
+  await stateTransaction(ctx.access, state => {
+    if (reason === 'state-missing') delete state.sessions[TARGET.session];
+    if (reason === 'session-working') state.sessions[TARGET.session].working = true;
+    if (reason === 'input-unobserved') state.sessions[TARGET.session].tracked = false;
+    if (reason === 'identity-changed') state.sessions[TARGET.session].birth = 'DIFFERENT';
+  });
+  const notification = { title: '完成', content: '正文', footer: '', level: 'success' };
+  assert.equal(await attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, {
+    env: ctx.env, session: async () => reason === 'session-unverified' ? null : TARGET,
+    replyDiagnostic: code => codes.push(code), err: text => errors.push(text),
+    bridge: async () => assert.fail('未通过会话检查不得启动桥接'),
+  }), null);
+  assert.deepEqual(codes, [reason]); assert.equal(errors.length, 1); assert.ok(errors[0].includes(reason));
+  assert.equal(notification.reply, undefined);
+});
+
+test('不同会话的通知诊断独立保存，正文和Token不落盘', async t => {
+  const ctx = await temp(t), other = { ...TARGET, session: 'other-session', pid: TARGET.pid + 1, birth: 'different-birth' };
+  await stateTransaction(ctx.access, state => {
+    state.sessions[TARGET.session].tracked = false;
+    state.sessions[other.session] = { ...other, updated: Date.now() };
+  });
+  await Promise.all([TARGET, other].map(target => dispatchClaudeHook(Buffer.from(JSON.stringify({
+    hook_event_name: 'Stop', session_id: target.session, last_assistant_message: 'PRIVATE_BODY_NOT_FOR_DIAGNOSTICS',
+  })), ctx.file, {
+    env: ctx.env, err: () => {}, reply: { session: async () => target, bridge: async () => true, api: () => ctx.api },
+    send: (plan, config) => deliver(plan, config, async () => ({ ok: true, result: { message_id: 900 } })),
+  })));
+  const directory = path.join(replyDirectory(ctx.file), 'notification-diagnostics');
+  const first = JSON.parse(await readFile(path.join(directory, TARGET.session + '.json'), 'utf8'));
+  const second = JSON.parse(await readFile(path.join(directory, other.session + '.json'), 'utf8'));
+  assert.equal(first.reply, 'input-unobserved'); assert.equal(second.reply, 'attached');
+  assert.equal(first.channels.telegram.status, 'complete'); assert.equal(second.channels.telegram.status, 'complete');
+  for (const value of [first, second]) {
+    const text = JSON.stringify(value);
+    assert.doesNotMatch(text, /PRIVATE_BODY|FAKE_ONLY|FakeTestBot|chat_id|callback|https?:/);
+    assert.deepEqual(Object.keys(value).sort(), ['channels', 'reply', 'updated', 'version']);
+  }
+  assert.deepEqual((await readdir(directory)).sort(), [other.session + '.json', TARGET.session + '.json'].sort());
+});
+
+test('本地诊断保存失败不影响投递、不重复发送', async t => {
+  const ctx = await temp(t), errors = []; let sends = 0;
+  await writeFile(path.join(replyDirectory(ctx.file), 'notification-diagnostics'), '阻止创建诊断目录');
+  await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Stop', session_id: TARGET.session,
+    last_assistant_message: '测试', })), ctx.file, {
+    env: ctx.env, err: text => errors.push(text), reply: { session: async () => TARGET, bridge: async () => true, api: () => ctx.api },
+    send: async plan => { sends++; return { ok: true, channel: plan.channel, sent: plan.items.length, planned: plan.items.length }; },
+  });
+  assert.equal(sends, 1); assert.equal(errors.length, 1); assert.match(errors[0], /诊断摘要未能保存/);
+});
+
+test('会话读取权限拒绝、损坏及身份查询失败与明确缺失分开', async t => {
+  const ctx = await temp(t), directory = path.join(ctx.env.CLAUDE_CONFIG_DIR, 'sessions');
+  assert.equal((await lookupSession(TARGET.session, { env: ctx.env })).status, 'missing');
+  const denied = async () => { throw Object.assign(new Error('PRIVATE'), { code: 'EACCES' }); };
+  assert.equal((await lookupSession(TARGET.session, { env: ctx.env, readDirectory: denied })).status, 'unavailable');
+  await mkdir(directory);
+  await atomicJson(path.join(directory, TARGET.pid + '.json'), { sessionId: TARGET.session, pid: TARGET.pid });
+  const options = { env: ctx.env, platform: 'win32', runner: async () => ({ code: 0, stdout: '{"birth":"123"}' }) };
+  assert.equal((await lookupSession(TARGET.session, options)).status, 'found');
+  assert.equal((await lookupSession(TARGET.session, { ...options, readSessionFile: denied })).status, 'unavailable');
+  assert.equal((await lookupSession(TARGET.session, { ...options, runner: denied })).status, 'unavailable');
+  await writeFile(path.join(directory, '54321.json'), '{BROKEN');
+  assert.equal((await lookupSession(TARGET.session, options)).status, 'unavailable'); // 不能排除不可读文件中还有同ID。
+  await assert.rejects(validateTarget(TARGET, options), SessionLookupError);
+});
+
+test('Stop核验暂不可用保留排队回复并暂停输入，恢复相同身份后仅提交一次', async t => {
+  const ctx = await temp(t);
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
+  await processUpdate(ctx.access, message(1, '保持原有效期'), ctx.context);
+  const queued = (await snapshot(ctx.access)).pending[TARGET.session];
+  await lifecycleHook({ hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file,
+    { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  let state = await snapshot(ctx.access);
+  assert.equal(state.sessions[TARGET.session].unverified, true);
+  assert.deepEqual(state.pending[TARGET.session], queued);
+  assert.equal(await resolveEntry(ctx.access, 'tg:111:100', ctx.context), null);
+  await drainReplies(ctx.access, { ...ctx.context, validate: async () => assert.fail('暂停状态不得尝试注入') });
+  assert.equal(ctx.inputs.length, 0);
+  await lifecycleHook({ hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file,
+    { env: ctx.env, session: async () => TARGET });
+  await drainReplies(ctx.access, ctx.context); await drainReplies(ctx.access, ctx.context);
+  assert.equal(ctx.inputs.length, 1);
+  state = await snapshot(ctx.access);
+  assert.equal(state.sessions[TARGET.session].unverified, undefined);
+  assert.equal(state.pending[TARGET.session].phase, 'submitted');
+  assert.equal(state.pending[TARGET.session].text, undefined);
+});
+
+test('核验不可用时新的本地输入仍取消旧排队任务，明确SessionEnd仍清理路由', async t => {
+  const ctx = await temp(t);
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
+  await processUpdate(ctx.access, message(1, '旧任务不得抢先输入'), ctx.context);
+  await lifecycleHook({ hook_event_name: 'UserPromptSubmit', session_id: TARGET.session, prompt: '本地新任务' }, ctx.file,
+    { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  const state = await snapshot(ctx.access);
+  assert.equal(state.pending[TARGET.session], undefined); assert.equal(state.sessions[TARGET.session].unverified, true);
+  await lifecycleHook({ hook_event_name: 'SessionEnd', session_id: TARGET.session }, ctx.file, { env: ctx.env });
+  assert.equal((await snapshot(ctx.access)).sessions[TARGET.session], undefined);
+});
+
+test('桥接注入前身份查询暂不可用暂停队列，不把它误标为已提交或丢弃正文', async t => {
+  const ctx = await temp(t);
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
+  await processUpdate(ctx.access, message(1, '暂停后恢复'), ctx.context);
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = false; });
+  await drainReplies(ctx.access, { ...ctx.context, validate: async () => { throw new SessionLookupError(); } });
+  let state = await snapshot(ctx.access);
+  assert.equal(state.pending[TARGET.session].phase, 'queued');
+  assert.equal(state.pending[TARGET.session].text, '暂停后恢复'); assert.equal(state.sessions[TARGET.session].unverified, true);
+  assert.equal(ctx.inputs.length, 0);
+  await lifecycleHook({ hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, { env: ctx.env, session: async () => TARGET });
+  await drainReplies(ctx.access, ctx.context); assert.equal(ctx.inputs.length, 1);
+});
+
+test('已登记提交后发生身份错误也不重新排队或重放', async t => {
+  const ctx = await temp(t); let attempted = 0;
+  await processUpdate(ctx.access, message(1, '不重放'), { ...ctx.context, inject: async () => { attempted++; throw new SessionLookupError(); } });
+  const state = await snapshot(ctx.access);
+  assert.equal(state.pending[TARGET.session].phase, 'unknown'); assert.equal(state.pending[TARGET.session].text, undefined);
+  await drainReplies(ctx.access, ctx.context); assert.equal(attempted, 1); assert.equal(ctx.inputs.length, 0);
+});
+
+test('暂停核验时不能登记新交互或使用旧按钮批准权限', async t => {
+  const ctx = await temp(t), { request } = await boundQuestion(ctx);
+  await lifecycleHook({ hook_event_name: 'Notification', session_id: TARGET.session }, ctx.file,
+    { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  await processUpdate(ctx.access, callback(1, request.id, 0, 'o0'), ctx.context);
+  assert.equal((await snapshot(ctx.access)).requests[request.id].response, undefined);
+  await assert.rejects(createInteraction(ctx.access, TARGET, 'permission', { tool_name: 'Bash' }), /会话|目标/);
+  await assert.rejects(registerToolCall(ctx.access, TARGET, { tool_use_id: 'new', tool_name: 'Bash', tool_input: { command: 'FAKE' } }), /核验会话/);
+});
+
 test('状态写入串行化、TTL 清理与损坏文件保留', async t => {
   const ctx = await temp(t);
   await Promise.all(Array.from({ length: 8 }, () => stateTransaction(ctx.access, state => { state.offset++; })));
@@ -603,6 +741,11 @@ for (const scenario of [
   if (!scenario.bridge) assert.match(text, /桥接还没有就绪/);
   else if (!scenario.identity) { assert.match(text, /getMe.*网络请求失败/); assert.doesNotMatch(text, /桥接还没有就绪/); }
   if (!scenario.telegram) assert.match(text, /telegram.*API 确认 0\/1.*网络请求失败/);
+  const diagnosticText = await readFile(path.join(replyDirectory(ctx.file), 'notification-diagnostics', TARGET.session + '.json'), 'utf8');
+  const diagnostic = JSON.parse(diagnosticText);
+  assert.equal(diagnostic.reply, !scenario.bridge ? 'bridge-unready' : !scenario.identity ? 'getme-failed' : 'attached');
+  assert.equal(diagnostic.channels.telegram.status, scenario.telegram ? 'complete' : 'incomplete');
+  assert.doesNotMatch(diagnosticText, /FAKE_SECRET|fake\.invalid|bot123|FakeTestBot/);
   if (button) {
     assert.deepEqual(errors, []);
     assert.ok((await snapshot(ctx.access)).entries['tg:111:900']);

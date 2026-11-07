@@ -36,6 +36,42 @@ async function fixture(t) {
   return { root, file, env, lease: path.join(replyDirectory(file), 'bridge.json') };
 }
 
+test('正常探测和ESRCH不依赖Windows回退，无效PID不执行探测', () => {
+  const options = { platform: 'win32', windowsQuery: () => assert.fail('不应执行回退') };
+  assert.equal(processState(123, { ...options, signal: () => true }), 'alive');
+  assert.equal(processState(123, { ...options, signal: () => { throw Object.assign(new Error(), { code: 'ESRCH' }); } }), 'dead');
+  for (const pid of [0, -1, NaN, Infinity, 1.5]) assert.equal(processState(pid, { signal: () => assert.fail('非法PID') }), 'unknown');
+});
+for (const code of ['EPERM', 'EACCES']) for (const found of [true, false])
+test(`Windows ${code} 只读PID枚举${found ? '确认存活' : '无结果仍未知'}`, () => {
+  let queries = 0;
+  assert.equal(processState(123, { platform: 'win32', signal: () => { throw Object.assign(new Error('PRIVATE'), { code }); },
+    windowsQuery: pid => { assert.equal(pid, 123); queries++; return found; } }), found ? 'alive' : 'unknown');
+  assert.equal(queries, 1);
+});
+test('非Windows权限不足不调用Windows程序，也不推断死亡', () => {
+  assert.equal(processState(123, { platform: 'darwin', signal: () => { throw Object.assign(new Error(), { code: 'EPERM' }); },
+    windowsQuery: () => assert.fail('不得调用Windows程序') }), 'unknown');
+});
+test('Windows只读查询异常仍未知，不将故障当死亡', () => {
+  assert.equal(processState(123, { platform: 'win32', signal: () => { throw Object.assign(new Error(), { code: 'EPERM' }); },
+    windowsQuery: () => { throw new Error('PRIVATE'); } }), 'unknown');
+});
+test('Windows实际tasklist只读回退让权限受限观察者识别就绪桥接且不新起消费者', { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t);
+  await atomicJson(f.lease, { pid: process.pid, owner: OWNER, ready: true, updated: Date.now() });
+  const original = process.kill;
+  process.kill = (pid, signal) => {
+    if (pid === process.pid && signal === 0) throw Object.assign(new Error('模拟跨提权等级拒绝'), { code: 'EPERM' });
+    return original(pid, signal);
+  };
+  try {
+    assert.equal(processState(process.pid), 'alive');
+    assert.deepEqual(await bridgeStatus(f.file), { running: true, ready: true, error: undefined });
+    assert.equal(await startBridge(f.file, f.env, { spawn: () => assert.fail('不能启动第二个消费者') }), true);
+  } finally { process.kill = original; }
+});
+
 test('Bot锁正常持有与幂等释放，不删除别人的新owner', async t => {
   const f = await temp(t);
   const lock = await acquireBotLock(f.lock, OWNER);

@@ -2,6 +2,16 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.6 — 2026-11-07
+
+- Distinguish unavailable session verification from confirmed exit: denied access, query failures, and damaged or incomplete registries pause remote input while retaining unsubmitted queues with their original expiry. New local input still cancels old queues; submitted or unknown-result input is never requeued.
+- Hook readiness checks verify accessible Node/CLI files and POSIX Node execute permission. Status reports missing, denied, or invalid paths without claiming to prove actual hook execution or Windows execution-policy acceptance.
+- Distinguish existing settings locks, denied write access, and other filesystem failures instead of describing permission errors as stale locks.
+- When Windows denies a zero-signal process probe, use the fixed system `tasklist.exe` to confirm the exact PID read-only, avoiding false bridge unreadiness across elevation levels. No elevation or lock preemption; failed queries remain unknown, and only `ESRCH` establishes exit.
+- Report reply-button skips separately for unverifiable sessions, missing state, working sessions, unobserved input, and changed process identity, without weakening input safety checks.
+- Keep the last completed-notification button reason and channel API-acknowledgment summary locally per session so successful hook exit does not discard diagnostics. No body, token, or underlying exception is saved; diagnostic write failures do not trigger resending.
+- Windows x64 / Node 24 regression totals 276 tests: 275 passed, 0 failed, and 1 opt-in native credential test skipped. The user confirmed reply-button recovery when normal and elevated sessions share a bridge; this does not establish acceptance of every terminal-input permission combination, macOS, or the minimum Node version.
+
 ## 0.2.5 — 2026-11-07
 
 - Distinguish Telegram `getMe` failures during reply-button preparation, bridge unreadiness, and notification-delivery failures. Retain bounded API error codes and report safe delivery categories and API-acknowledged part counts, without exposing underlying exceptions or server bodies. Do not infer exact send error codes discarded by the communication library.

@@ -1,6 +1,24 @@
 import { HttpError, TelegramApiError, TransportError } from '@quecue/notify-core';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
+import path from 'node:path';
+import { atomicJson, replyDirectory } from './reply-state.js';
+
+export type ReplyDiagnosticCode = 'not-attempted' | 'disabled' | 'session-unverified' | 'state-missing'
+  | 'session-working' | 'input-unobserved' | 'identity-changed' | 'bridge-unready' | 'getme-failed'
+  | 'check-failed' | 'attached';
+export interface NotificationDiagnostic {
+  version: 1;
+  updated: number;
+  reply: ReplyDiagnosticCode;
+  replyReason?: string;
+  channels: Partial<Record<'telegram' | 'feishu', { status: 'complete' | 'incomplete' | 'failed'; sent?: number; planned?: number; reason?: string }>>;
+}
+export async function saveNotificationDiagnostic(file: string, session: unknown, value: NotificationDiagnostic): Promise<void> {
+  if (typeof session !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) return;
+  // 每会话只保留最后一份完成通知摘要；不记录正文、收件人、Token 或原始异常。
+  await atomicJson(path.join(replyDirectory(file), 'notification-diagnostics', session + '.json'), value);
+}
 
 // 仅保留类型和有界状态码；不输出底层异常、URL、Token 或服务端正文。
 export class TelegramRequestError extends ConfigError {

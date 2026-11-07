@@ -1,12 +1,37 @@
 import { open, readFile, unlink, lstat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
 
 export type ProcessState = 'alive' | 'dead' | 'unknown';
-export function processState(pid: number): ProcessState {
-  try { process.kill(pid, 0); return 'alive'; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'dead' : 'unknown'; }
+interface ProcessProbeOptions {
+  platform?: NodeJS.Platform;
+  signal?: (pid: number) => unknown;
+  windowsQuery?: (pid: number) => boolean;
+}
+function windowsProcessExists(pid: number): boolean {
+  const executable = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tasklist.exe');
+  const result = spawnSync(executable, ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+    shell: false, windowsHide: true, encoding: 'utf8', timeout: 5000, maxBuffer: 65536,
+  });
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return false;
+  // 只认可精确 PID 的 CSV 行；没有结果、权限不足或异常输出均不证明进程死亡。
+  return result.stdout.split(/\r?\n/).some(line => /^"[^"]+","(\d+)"/.exec(line.trim())?.[1] === String(pid));
+}
+export function processState(pid: number, options: ProcessProbeOptions = {}): ProcessState {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return 'unknown';
+  try { (options.signal ?? (value => process.kill(value, 0)))(pid); return 'alive'; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return 'dead';
+    // Windows 的 signal=0 也可能被跨提权等级权限拒绝；改用只读枚举确认存活，不提权。
+    if ((options.platform ?? process.platform) === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+      try { if ((options.windowsQuery ?? windowsProcessExists)(pid)) return 'alive'; } catch { /* 仍无法确认则保守处理。 */ }
+    }
+    return 'unknown';
+  }
 }
 interface LockRecord { pid: number; owner: string }
 export interface BotLock { release(): Promise<void> }

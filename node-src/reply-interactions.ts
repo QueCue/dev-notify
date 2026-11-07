@@ -30,7 +30,7 @@ export async function createInteraction(access: ReplyAccess, target: SessionTarg
     answers: {}, selected: [], index: 0, call, receipts: [], messages: [] };
   await stateTransaction(access, state => {
     const current = state.sessions[target.session];
-    if (!current || targetEpoch(current) !== value.epoch) throw new ConfigError(t('reply.targetChanged'));
+    if (!current || current.unverified === true || targetEpoch(current) !== value.epoch) throw new ConfigError(t('reply.targetChanged'));
     if (call) {
       const bound = state.calls[call];
       if (!bound || bound.ended || bound.request || bound.epoch !== value.epoch) throw new ConfigError(t('reply.callUnavailable'));
@@ -131,7 +131,7 @@ export async function handleInteractionCallback(access: ReplyAccess, callback: a
   const [, id, index, operation] = match;
   const outcome = await stateTransaction(access, state => {
     const value = state.requests[id], target = value && state.sessions[value.session];
-    if (!active(value) || value.index !== Number(index) || !target || targetEpoch(target) !== value.epoch) return 'expired';
+    if (!active(value) || value.index !== Number(index) || !target || target.unverified === true || targetEpoch(target) !== value.epoch) return 'expired';
     if (operation === 'l') { finishInteraction(value, { kind: 'not-applied', reason: 'closed', text: t('reply.closedLocal') }); return 'local'; }
     const question = value.questions[value.index]?.question;
     const previousIndex = value.index;
@@ -177,7 +177,7 @@ export async function handleInteractionText(access: ReplyAccess, id: string, cha
   const outcome = await stateTransaction(access, state => {
     const value = state.requests[id], target = value && state.sessions[value.session];
     const entry = state.entries[`tg:${chat}:${message.reply_to_message.message_id}`];
-    if (!active(value) || !target || targetEpoch(target) !== value.epoch || entry?.question !== value.index) return 'expired';
+    if (!active(value) || !target || target.unverified === true || targetEpoch(target) !== value.epoch || entry?.question !== value.index) return 'expired';
     const question = value.questions[value.index]?.question;
     if (value.kind === 'permission') {
       if (access.policy.permissions !== true) return 'expired';
@@ -202,7 +202,7 @@ export async function waitInteraction(access: ReplyAccess, value: Interaction, f
     const response = await stateTransaction(access, state => {
       const request = state.requests[value.id], target = state.sessions[value.session];
       if (!request || request.result || !target || targetEpoch(target) !== value.epoch || (request.call && (!state.calls[request.call] || state.calls[request.call].ended))) return { ended: true };
-      if (!request.response || request.claimed || options.signal?.aborted) return null;
+      if (target.unverified === true || !request.response || request.claimed || options.signal?.aborted) return null;
       request.claimed = true;
       // 回传后等待独立的完成事件确认；不能在这里删除请求或报告成功。
       request.expires = Date.now() + INTERACTION_MS;

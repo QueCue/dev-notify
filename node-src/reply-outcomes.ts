@@ -1,5 +1,6 @@
 import { digest, stateTransaction, targetEpoch, type Interaction, type InteractionResult, type ReplyAccess, type ReplyState, type SessionTarget } from './reply-state.js';
 import { t } from './i18n.js';
+import { ConfigError } from './config.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
 
 // PermissionRequest 没有 tool_use_id：只接受唯一且尚未结束的同输入调用，歧义时保留本机处理。
@@ -43,6 +44,7 @@ export async function registerToolCall(access: ReplyAccess, target: SessionTarge
   await stateTransaction(access, state => {
     if (state.calls[key]) return;
     const previous = state.sessions[target.session];
+    if (previous?.unverified === true || target.unverified === true) throw new ConfigError(t('reply.sessionUnavailable'));
     state.sessions[target.session] = { ...target, working: true, latestCall: key, tracked: previous?.tracked === true && targetEpoch(previous) === targetEpoch(target) };
     state.calls[key] = { id: data.tool_use_id, session: target.session, epoch: targetEpoch(target), tool: data.tool_name,
       fingerprint: inputFingerprint(data.tool_input), prompt: typeof data.prompt_id === 'string' ? data.prompt_id : undefined, updated: Date.now() };

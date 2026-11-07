@@ -11,7 +11,7 @@ export const TTL = 24 * 60 * 60 * 1000;
 export const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 export const botKey = (config: Config) => digest(config.telegram.token);
 export interface ReplyPolicy { version: 1; enabled: boolean; bot: string; users: string[]; generation: string; permissions?: boolean }
-export interface SessionTarget { session: string; pid: number; birth: string; tty: string; title: string; cwd: string; updated: number; working: boolean; tracked?: boolean; latestCall?: string }
+export interface SessionTarget { session: string; pid: number; birth: string; tty: string; title: string; cwd: string; updated: number; working: boolean; tracked?: boolean; latestCall?: string; unverified?: boolean }
 export const targetEpoch = (target: SessionTarget) => digest(JSON.stringify([target.session, target.pid, target.birth, target.tty]));
 export interface Entry { session: string; epoch: string; updated: number; request?: string; question?: number }
 export interface Pending { hash: string; id: string; epoch: string; updated: number; queued: boolean;
@@ -126,7 +126,8 @@ export async function stateTransaction<T>(access: ReplyAccess, work: (state: Rep
     }
     for (const [key, value] of Object.entries(state.sessions)) {
       if (value.session !== key || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.birth !== 'string'
-        || typeof value.tty !== 'string' || typeof value.working !== 'boolean') delete state.sessions[key];
+        || typeof value.tty !== 'string' || typeof value.working !== 'boolean'
+        || value.unverified !== undefined && typeof value.unverified !== 'boolean') delete state.sessions[key];
     }
     for (const [key, value] of Object.entries(state.entries)) {
       if (typeof value.session !== 'string' || typeof value.epoch !== 'string') delete state.entries[key];

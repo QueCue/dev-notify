@@ -7,7 +7,7 @@ import { t } from './i18n.js';
 import { shouldNotify, type NotifyEvent } from './notifications.js';
 import { transcriptEndTime } from './hook-time.js';
 import { findSessionName } from './reply-platform.js';
-import { ReplyPreparationError, safeDeliveryReason, safeFailureReason } from './notification-diagnostics.js';
+import { ReplyPreparationError, safeDeliveryReason, safeFailureReason, saveNotificationDiagnostic, type NotificationDiagnostic, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { lifecycleHook, interactionHook, attachReply, mapReplies, notificationCoverage, type ReplyHookOptions } from './reply-hooks.js';
 
 export const MAX_HOOK_BYTES = 8 * 1024 * 1024;
@@ -92,7 +92,9 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
   const message = claudeHookMessage(bytes);
   const data = JSON.parse(decodeUtf8(bytes));
   const now = context.now?.() ?? new Date();
-  const options = { send: context.send, ...context.reply, env: context.env, err: context.err, response: context.response };
+  const diagnostic: NotificationDiagnostic = { version: 1, updated: now.getTime(), reply: 'not-attempted', channels: {} };
+  const options = { send: context.send, ...context.reply, env: context.env, err: context.err, response: context.response,
+    replyDiagnostic: (code: ReplyDiagnosticCode) => { diagnostic.reply = code; context.reply?.replyDiagnostic?.(code); } };
   try {
     await lifecycleHook(data, configFile, options);
     await interactionHook(data, configFile, options);
@@ -121,7 +123,11 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
   }
   let binding = null;
   try { binding = await attachReply(notification, data, configFile, options); }
-  catch (error) { context.err(error instanceof ReplyPreparationError ? error.message : t('hook.replyNotReady')); }
+  catch (error) {
+    diagnostic.reply = error instanceof ReplyPreparationError ? 'getme-failed' : 'check-failed';
+    diagnostic.replyReason = error instanceof ReplyPreparationError ? error.message : safeFailureReason(error);
+    context.err(error instanceof ReplyPreparationError ? error.message : t('hook.replyNotReady'));
+  }
   let covered = { telegram: [] as string[], feishu: false };
   try { covered = await notificationCoverage(data, configFile, config, options); }
   catch { context.err(t('hook.coverageFailed')); }
@@ -139,10 +145,20 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
       }
       if (binding) mapReplies(plan, binding);
       const result = await context.send(plan, config);
+      diagnostic.channels[channel] = { status: result.ok ? 'complete' : 'incomplete', sent: result.sent, planned: result.planned,
+        ...(!result.ok ? { reason: safeDeliveryReason(result.error) } : {}) };
       if (!result.ok) context.err(t('hook.sendIncompleteDetail', {
         channel, sent: result.sent, planned: result.planned, reason: safeDeliveryReason(result.error),
       }));
-    } catch (error) { context.err(t('hook.sendFailedDetail', { channel, reason: safeFailureReason(error) })); }
+    } catch (error) {
+      diagnostic.channels[channel] = { status: 'failed', reason: safeFailureReason(error) };
+      context.err(t('hook.sendFailedDetail', { channel, reason: safeFailureReason(error) }));
+    }
+  }
+  if (data.hook_event_name === 'Stop') {
+    diagnostic.updated = Date.now();
+    try { await saveNotificationDiagnostic(configFile, data.session_id, diagnostic); }
+    catch { context.err(t('hook.diagnosticWriteFailed')); }
   }
   if (!channels) throw new ConfigError(t('hook.noChannels'));
 }

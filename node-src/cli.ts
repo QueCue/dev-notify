@@ -18,7 +18,7 @@ import { updatePackage } from './update.js';
 import { postUpdate } from './maintenance.js';
 import { joinList, localeName, parseLocale, resolveLocale, setLocale, t, type Locale } from './i18n.js';
 
-export const VERSION = '0.2.5';
+export const VERSION = '0.2.6';
 const helpText = () => t('cli.help', { version: VERSION });
 function rawLang(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -136,8 +136,9 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
         context.out(t('cli.integrationStatusFile', { file: status.file }));
         context.out(t('cli.integrationStatusCounts', { stop: status.stop, notification: status.notification,
           lifecycle: status.lifecycle, interaction: status.interaction, others: status.others }));
+        for (const issue of status.runtimeIssues) context.out(t('cli.integrationRuntimeIssue', { event: issue.event, kind: issue.kind, reason: issue.reason }));
         context.out(status.disabled ? t('cli.integrationDisabled') : t('cli.integrationStatusNote'));
-        return status.stop === 1 && status.notification === 1 && status.lifecycle === 3 && status.interaction === 5 && !status.disabled ? 0 : 1;
+        return status.stop === 1 && status.notification === 1 && status.lifecycle === 3 && status.interaction === 5 && !status.disabled && !status.runtimeIssues.length ? 0 : 1;
       }
       const prompts = context.prompts ?? (values.yes
         ? { out: context.out, text: async () => '', secret: async () => '' }

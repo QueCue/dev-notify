@@ -6,6 +6,15 @@ import { ConfigError, type Env } from './config.js';
 import { t } from './i18n.js';
 import { claudeSettingsPath } from './claude-code.js';
 import type { SessionTarget } from './reply-state.js';
+import { processState } from './reply-lock.js';
+
+export class SessionLookupError extends ConfigError {
+  constructor() { super(t('reply.sessionUnavailable')); }
+}
+function unavailable(strict: boolean): null {
+  if (strict) throw new SessionLookupError();
+  return null;
+}
 
 export interface CommandResult { code: number; stdout: string }
 export type Runner = (command: string, args: string[], input?: string) => Promise<CommandResult>;
@@ -32,45 +41,64 @@ export function sanitizeReply(text: string): string {
   if (!value) throw new ConfigError(t('reply.emptyAfterCleanup'));
   return value;
 }
-export async function processIdentity(pid: number, platform = process.platform, runner: Runner = runCommand): Promise<{ birth: string; tty: string } | null> {
+export async function processIdentity(pid: number, platform = process.platform, runner: Runner = runCommand, strict = false): Promise<{ birth: string; tty: string } | null> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     if (platform === 'win32') {
       const result = await powershell(READ_PROCESS, { pid }, runner);
-      if (result.code !== 0) return null;
+      if (result.code === 3) return null; // 已明确查到的进程不是 Claude，旧绑定无效。
+      if (result.code !== 0) return processState(pid) === 'dead' ? null : unavailable(strict);
       const d = JSON.parse(result.stdout);
-      return typeof d.birth === 'string' && /^\d+$/.test(d.birth) ? { birth: d.birth, tty: '' } : null;
+      return typeof d.birth === 'string' && /^\d+$/.test(d.birth) ? { birth: d.birth, tty: '' } : unavailable(strict);
     }
     if (platform === 'darwin') {
       const result = await runner('/bin/ps', ['-p', String(pid), '-o', 'lstart=', '-o', 'tty=', '-o', 'comm=']);
       const match = result.stdout.trim().match(/^(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+(\S+)\s+(.+)$/);
-      if (result.code !== 0 || !match || path.posix.basename(match[3]) !== 'claude' || !/^ttys\d+$/.test(match[2])) return null;
+      if (result.code !== 0) return processState(pid) === 'dead' ? null : unavailable(strict);
+      if (!match) return unavailable(strict);
+      if (path.posix.basename(match[3]) !== 'claude') return null;
+      if (!/^ttys\d+$/.test(match[2])) return unavailable(strict);
       const groups = await runner('/bin/ps', ['-p', String(pid), '-o', 'pgid=', '-o', 'tpgid=']);
       const group = groups.stdout.trim().match(/^(\d+)\s+(\d+)$/);
-      if (groups.code !== 0 || !group || group[1] !== group[2]) return null;
+      if (groups.code !== 0 || !group || group[1] !== group[2]) return unavailable(strict);
       return { birth: match[1].replace(/\s+/g, ' '), tty: '/dev/' + match[2] };
     }
-  } catch { /* 目标不确定时拒绝，不向任意前台终端回退。 */ }
-  return null;
+  } catch { return unavailable(strict); }
+  return unavailable(strict);
 }
-export interface SessionOptions { env?: Env; platform?: NodeJS.Platform; home?: string; runner?: Runner }
+export interface SessionOptions {
+  env?: Env; platform?: NodeJS.Platform; home?: string; runner?: Runner; strict?: boolean;
+  readDirectory?: (directory: string) => Promise<string[]>;
+  readSessionFile?: (file: string) => Promise<Uint8Array>;
+}
+export type SessionLookup = { status: 'found'; target: SessionTarget } | { status: 'missing' | 'unavailable' };
+export async function lookupSession(session: string, options: SessionOptions = {}): Promise<SessionLookup> {
+  try {
+    const target = await findSession(session, { ...options, strict: true });
+    return target ? { status: 'found', target } : { status: 'missing' };
+  } catch { return { status: 'unavailable' }; }
+}
 export async function findSession(session: string, options: SessionOptions = {}): Promise<SessionTarget | null> {
   if (!session || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) return null;
   const directory = path.join(path.dirname(claudeSettingsPath(options.env, options.home ?? homedir())), 'sessions');
   let names;
-  try { names = await readdir(directory); } catch { return null; }
+  try { names = await (options.readDirectory ?? readdir)(directory); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : unavailable(options.strict === true); }
   const matches: any[] = [];
+  let incomplete = false;
   for (const name of names) {
     if (!/^\d+\.json$/.test(name)) continue;
     try {
-      const bytes = await readFile(path.join(directory, name));
-      if (bytes.length > 128 * 1024) continue;
+      const bytes = await (options.readSessionFile ?? readFile)(path.join(directory, name));
+      if (bytes.length > 128 * 1024) { incomplete = true; continue; }
       const d = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-      if (d.sessionId === session && d.pid === Number(name.slice(0, -5))) matches.push(d);
-    } catch { /* 其他损坏或写入中的会话文件不作为目标。 */ }
+      if (!d || typeof d.sessionId !== 'string' || !Number.isSafeInteger(d.pid) || d.pid <= 0 || d.pid !== Number(name.slice(0, -5))) { incomplete = true; continue; }
+      if (d.sessionId === session) matches.push(d);
+    } catch { incomplete = true; }
   }
-  if (matches.length !== 1) return null;
-  const d = matches[0], identity = await processIdentity(d.pid, options.platform, options.runner);
+  if (incomplete || matches.length > 1) return unavailable(options.strict === true);
+  if (!matches.length) return null;
+  const d = matches[0], identity = await processIdentity(d.pid, options.platform, options.runner, options.strict === true);
   if (!identity) return null;
   return { session, pid: d.pid, ...identity, title: typeof d.name === 'string' ? Array.from(d.name).slice(0, 60).join('') : '',
     cwd: typeof d.cwd === 'string' ? d.cwd : '', updated: Date.now(), working: false };
@@ -93,7 +121,8 @@ export async function findSessionName(session: string, options: { env?: Env; hom
   return '';
 }
 export async function validateTarget(target: SessionTarget, options: SessionOptions = {}): Promise<boolean> {
-  const current = await findSession(target.session, options);
+  if (target.unverified === true) throw new SessionLookupError();
+  const current = await findSession(target.session, { ...options, strict: true });
   return current !== null && current.pid === target.pid && current.birth === target.birth && current.tty === target.tty;
 }
 const WINDOWS_INJECT = `$ErrorActionPreference='Stop';[Console]::InputEncoding=[Text.UTF8Encoding]::new($false);$x=[Console]::In.ReadToEnd()|ConvertFrom-Json;$p=Get-Process -Id $x.pid;if($p.ProcessName -ne 'claude' -or $p.StartTime.ToUniversalTime().Ticks.ToString() -ne $x.birth){exit 3}
