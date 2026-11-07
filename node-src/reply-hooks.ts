@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigError, type Config, type Env } from './config.js';
 import { t } from './i18n.js';
 import { accessReplies, botKey, digest, stateTransaction, targetEpoch, type ReplyAccess, type SessionTarget } from './reply-state.js';
@@ -7,7 +8,7 @@ import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
 import { bridgeStatus, startBridge } from './reply-bridge.js';
-import { ReplyPreparationError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
+import { ReplyPreparationError, TelegramConnectionResetError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
 import { makePlan, deliver, type Message, type Plan } from './channels.js';
 import { completeToolCall, endSessionInteractions, finishInteraction, matchingCall, registerToolCall } from './reply-outcomes.js';
@@ -23,6 +24,7 @@ export interface ReplyHookOptions {
   replyDiagnostic?: (code: ReplyDiagnosticCode) => void;
   response?: (value: Record<string, any>) => void;
   wait?: typeof waitInteraction;
+  sleep?: (ms: number) => Promise<unknown>;
 }
 const apiFor = (access: ReplyAccess, options: ReplyHookOptions) => (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
 async function inspectTarget(data: any, options: ReplyHookOptions): Promise<SessionLookup> {
@@ -148,8 +150,27 @@ export async function attachReply(message: Message, data: any, file: string, opt
   if (!ready) { options.replyDiagnostic?.('bridge-unready'); options.err?.(t('reply.bridgeNotReadyButton')); return null; }
   const api = apiFor(access, options);
   let bot;
-  try { bot = await api('getMe', {}); }
-  catch (error) { throw new ReplyPreparationError(error); }
+  try {
+    try { bot = await api('getMe', {}); }
+    catch (error) {
+      if (!(error instanceof TelegramConnectionResetError)) throw error;
+      options.replyDiagnostic?.('getme-reset-retry');
+      await (options.sleep ?? delay)(500);
+      const current = await accessReplies(file, options.env);
+      if (!current) return skip('disabled');
+      if (current.identity !== access.identity) return skip('identity-changed');
+      const active = await getTarget(data, options);
+      if (!active || targetEpoch(active) !== targetEpoch(target)) return skip('identity-changed');
+      const latest = await stateTransaction(current, state => state.sessions[target.session]);
+      if (!latest || latest.unverified === true) return skip('session-unverified');
+      if (latest.working) return skip('session-working');
+      if (!latest.tracked) return skip('input-unobserved');
+      if (targetEpoch(latest) !== targetEpoch(target)) return skip('identity-changed');
+      const stillReady = options.bridge ? await options.bridge(file, options.env ?? process.env) : (await bridgeStatus(file)).ready;
+      if (!stillReady) return skip('bridge-unready');
+      bot = await api('getMe', {}); // 只读查询最多重试一次，不重试发送消息。
+    }
+  } catch (error) { throw new ReplyPreparationError(error); }
   if (typeof bot?.username !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(bot.username)) throw new ConfigError(t('reply.botUsernameInvalid'));
   const token = randomBytes(16).toString('hex');
   await stateTransaction(access, state => { state.entries['token:' + token] = { session: target.session, epoch: targetEpoch(target), updated: Date.now() }; });

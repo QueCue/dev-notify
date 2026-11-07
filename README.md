@@ -2,46 +2,34 @@
 
 简体中文 | [English](README.en.md)
 
-跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code 或项目目录。
+通过 **Telegram 和飞书**接收任务通知；配合 Claude Code，可远程回复会话、回答选择题，并在单独授权后逐次确认工具权限。
 
-**npm 包名为 `@quecue/dev-notify`，支持通用通知、Claude Code 远程回复，以及本机与 Telegram 双端答题和结果反馈。** 源码仓库：[QueCue/dev-notify](https://github.com/QueCue/dev-notify)。版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本和发布标签以 npm registry 为准，源码更新不等同于已发布。
+- npm 包：`@quecue/dev-notify`
+- 源码：[QueCue/dev-notify](https://github.com/QueCue/dev-notify)
+- 版本与升级说明：[CHANGELOG.md](CHANGELOG.md)
+- 安全与隐私：[SECURITY.md](SECURITY.md)
 
-### 当前源码的通讯层依赖
+通用通知不依赖 Claude Code。通讯依赖 [QueCue/notify-core](https://github.com/QueCue/notify-core) 由 npm 自动安装，无需另行安装。
 
-从 0.2.3 起使用标准 npm 运行时依赖 `@quecue/notify-core`，范围为 `^0.1.0`，允许 `>=0.1.0 <0.2.0` 的稳定版本，源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。已发布的 `0.2.2` 仍精确依赖 `0.1.0`；版本实际可用性以 npm registry 为准。
+## 安装与快速开始
 
-依赖由 npm 安装，构建只编译本应用，不复制通讯库或链接兄弟仓库源码。npm 用户无需手动安装通讯库。`@quecue/notify-core@0.1.0` 已通过 GitHub Actions 发布，锁文件仍固定已验证的 `0.1.0`、registry 来源和 integrity；源码开发使用 `npm ci --ignore-scripts` 精确还原，不会因为版本范围放宽自动更新锁文件。正常安装允许兼容版本，不保证每次升级都会重新下载依赖或强制选择最新补丁。
-
-## 安装与使用
-
-要求 Node.js 22 或以上，首发目标 Windows、macOS。运行时依赖锁定版本的 `@napi-rs/keyring`，由 npm 安装对应系统的预编译原生组件，不需要额外的语言工具链或编译器。请保留 npm 的 optional 依赖。
-
-从 npm 安装：
+要求 **Node.js 22 或以上**，支持 Windows、macOS。请保留 npm 的 optional 依赖，不要使用 `--omit=optional`；系统凭据组件由 npm 安装。
 
 ```sh
-npm view @quecue/dev-notify dist-tags
 npm install -g @quecue/dev-notify
 dev-notify --version
 dev-notify setup
 ```
 
-也可用环境变量覆盖凭据和接收人：`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`、`FEISHU_WEBHOOK`、`FEISHU_SECRET`；路径变量 `DEV_NOTIFY_HOME`、`CLAUDE_CONFIG_DIR`。显式存在的变量优先，空值也会覆盖；完整规则和自定义变量名见下文「路径、模板和环境变量」。
+向导会引导你选择渠道、填写凭据和接收人，并在保存前汇总确认：
 
-默认安装使用 npm 的 `latest` 标签；`alpha` 是预发行标签，不代表比稳定版更新。可用上面的 `npm view` 命令核对标签，使用 `dev-notify --version` 核对已安装版本。升级说明见 changelog；升级后应更新完整 hooks 并重启已有回复桥接。有效授权和通知凭据无需重新配置，自定义配置继续传入原来的 `--config` 路径。
+1. Telegram：准备 Bot Token，先向 Bot 发送消息，再选择接收人或手动填写数字 chat_id。多个接收人用逗号分隔。
+2. 飞书：填写中国站自定义机器人的 Webhook，可选填签名密钥。
+3. 密钥隐藏输入、不回显；终端无法隐藏输入时会停止。
+4. 确认后默认发送一条测试通知，并安装 Claude Code 通知 hooks；可分别用 `--no-test`、`--no-hooks` 跳过。
+5. 已有配置可再次运行 `setup` 编辑，密钥留空保留，选填签名输入 `-` 清除。
 
-诊断测试版需显式安装，不会由普通 `update` 自动切换到 `beta`：
-
-```sh
-npm install -g @quecue/dev-notify@0.2.7-beta.1 --registry=https://registry.npmjs.org/
-dev-notify --version
-dev-notify update --yes  # 已安装 beta 后，执行现有 hooks/桥接维护，不切换标签
-```
-
-测试版只增强留证，不保证修复故障。无需重新运行 `setup` 或 `reply setup`。回退正式版可显式安装 `@quecue/dev-notify@latest`，再执行 `dev-notify update --yes` 完成维护。自定义配置的维护命令继续传入原 `--config` 路径。
-
-以下主流程使用 npm 安装的 `dev-notify` 命令；源码构建与 `node dist/cli.js` 用法见「开发与验证」。
-
-配置完成后发送：
+凭据保存到 Windows Credential Manager／macOS Keychain，不明文写入配置。系统可能弹出凭据访问授权；失败时不会自动降级为明文存储。
 
 ```sh
 dev-notify send --title "构建完成" --content "安装包已生成"
@@ -50,67 +38,35 @@ dev-notify send --title "任务输出" --stdin
 dev-notify send --title "分段预览" --content-file result.txt --dry-run
 ```
 
-若需要本地安装为 `dev-notify` 命令，在构建后运行 `npm install --global .`，之后可执行 `dev-notify setup`、`dev-notify send ...`。这是本地源码安装，不是从公开 registry 安装；本工程不会自动进行全局安装或发布。
+支持 `--channel telegram|feishu|all`、`--level info|success|warn|error`、`--footer`。文件必须是 UTF-8。`--dry-run` 不联网，也不输出正文或凭据。
 
-正式包的安装、升级和卸载由 npm 负责。**卸载前建议先清理凭据**：npm 卸载不会自动删除用户凭据。请先交互执行 `dev-notify credentials clear`，再卸载。该命令只删除当前配置引用的 Node 凭据，不扫描其他配置或删除无关条目，也不处理旧版原型凭据；但共享同一凭据引用的配置副本也会失去该凭据。
-
-已安装的版本可以用 `update` 升级；它只负责检查版本并调用 npm，不会自己下载或替换文件：
+## 升级与测试版
 
 ```sh
-dev-notify update           # 检查并在确认后运行 npm install -g
-dev-notify update --check   # 只检查，不安装
-dev-notify update --yes     # 跳过确认（适合脚本）
-dev-notify update --no-post # 只更新包，不执行 hooks/桥接维护
+dev-notify update           # 检查并确认升级
+dev-notify update --yes     # 跳过升级确认
+dev-notify update --check   # 只检查
+dev-notify update --no-post # 仅更新包，跳过 hooks/桥接维护
 ```
 
-实际的完整性校验、registry 配置、权限处理和原生依赖解析仍由 npm 完成。0.2.4会在安装后核验当前命令入口确实对应目标版本；若 npm 更新了另一份 Node/npm 安装，会明确报错而不从旧入口维护。核验通过后，`update` 会重新安装绑定当前配置的 Claude Code hooks（已存在且配置匹配时），并恢复或重启已授权回复桥接；不需要时可用 `--no-post` 跳过。在 0.1.3 及以后，即使已经是最新版本，`update` 也会执行同样的维护，因此可以用同一条命令完成升级后的收尾。
+`update` 会维护绑定当前配置的现有 Claude Code hooks，并恢复或重启已授权的回复桥接；即使版本已最新，也会执行维护。已有凭据和有效回复授权无需重新配置。自定义配置请继续传入 `--config <路径>`。
 
-## 已提供的功能
+若 npm 更新了另一份 Node/npm 安装，命令会报告入口不匹配，不会从旧入口继续维护。切换 Node 版本后，请从目标 Node 环境重新安装本工具，并更新 hooks。
 
-- Telegram、飞书双渠道通知，按渲染后的长度分段，不会悄悄截断内容。
-- 文本、严格 UTF-8 文件或标准输入；支持渠道选择、通知级别、辅助信息。
-- 交互配置（含 Telegram 接收人自动发现）、隐藏输入、系统凭据存储、环境变量覆盖。
-- 配置更新冲突检测、失败恢复、凭据清理。
-- 安装时默认随汇总确认发送测试通知，可用 `--no-test` 跳过；测试失败不会撤销已保存的配置。
-- 默认随汇总确认安装 Claude Code 集成：最终回复、等待通知；可用 `--no-hooks` 跳过，支持独立查询和移除。
-- 可按完成/等待事件、项目绝对路径过滤 Claude Code 通知，并支持本机时间的静默时段。
-- 独立授权的 Telegram 按钮回复、直接回复消息、飞书跳转；逐段映射到具体会话。
-- 普通回复本地排队、终端提交与 `UserPromptSubmit` 收到确认，状态不混淆。
-- `AskUserQuestion` 原始选项、单选/多选、自定义答案，通过官方 hook JSON 直接回传。
-- 另外选择启用后，可逐次允许或拒绝工具权限，或填写自定义拒绝说明；不写永久权限规则。
-- `paths`、`doctor`、`status`、`send --dry-run` 离线诊断；`reply start/status/stop/disable/run` 管理桥接。
-
-**通用通知不依赖 Claude Code。** npm 安装不会修改其他应用的配置，也不会启动后台服务。通知 hooks 和远程输入是两层独立授权：默认只发送通知，授权后才启用回复桥接。没有自动授权配对、远程 shell 执行器或系统开机自启。
-
-## 配置向导
+默认安装使用 npm `latest`；普通 `update` 不会自动转到 `beta`。仅在需要测试版时显式安装：
 
 ```sh
-dev-notify setup
+npm view @quecue/dev-notify dist-tags
+npm install -g @quecue/dev-notify@beta
+dev-notify --version
+dev-notify update --yes
 ```
 
-1. 选择 Telegram、飞书或两者；编辑已有配置时显示当前选择，直接回车保留。
-2. Token、webhook 和签名密钥均以隐藏输入读取（不回显）。终端无法安全隐藏输入时，向导会停止，不会改用明文输入。
-3. Telegram 会先尝试读取 Bot 最近的更新，列出最近与 Bot 对话的私聊、群组或频道（只提取 chat_id 和名称，不显示或保存消息正文），可输入 `#1,#3` 选择；也可以直接填写数字 chat_id，多个用逗号分隔。桥接正在运行、Bot 已配置 webhook 或网络失败时会跳过自动发现并回退手动填写。用户需要先启动 Bot 并给 Bot 发一条消息。
-4. 汇总展示渠道、接收人数、测试通知、Claude Code 用户级设置路径和发送范围，一次确认后保存。输入错误可以重试，Ctrl+C 取消。
-5. 确认后默认发送固定内容的测试通知（`--no-test` 跳过）。测试失败不会撤销已成功保存的配置。
-6. 确认后默认合并安装 Claude Code 通知 hooks（`--no-hooks` 跳过）。已有集成保持原样，不重复添加。
-7. 远程回复授权不在 setup 中询问；Telegram 可用时提示另行运行 `reply setup`，选择具体可信私聊用户并单独确认。
+测试版可能不稳定。回到正式版时显式安装 `@quecue/dev-notify@latest`，再执行 `dev-notify update --yes`。
 
-编辑已有配置不再二次询问是否继续；密钥留空保留已存值，可选签名输入 `-` 清除。没有选中的渠道会被禁用，新条目只保留所选渠道的凭据。环境变量仍然优先（`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`、`FEISHU_WEBHOOK`、`FEISHU_SECRET`）；向导会提示哪些变量正在覆盖配置；测试和后续运行使用环境覆盖后的有效值，但持久保存的是向导输入的凭据与选择的接收人，不会把环境覆盖值自动写回配置或系统凭据。完整列表见「路径、模板和环境变量」。
+## Claude Code 通知
 
-自动化使用无密钥模板和 CI secrets：
-
-```sh
-dev-notify setup --template --yes
-```
-
-需要只保存配置、不发送测试或不安装 hooks 时，使用 `setup --no-test` / `setup --no-hooks`（可组合）。模板不会覆盖已有配置。`--yes` 只能配合 `--template` 使用；保存密钥前仍然需要交互确认。
-
-## Claude Code 通知集成
-
-要求使用支持命令 hook `command` + `args`（无 shell exec 形式）及 `async` 的新版 Claude Code。实际加载情况在 Claude Code 的 `/hooks` 中确认；如果旧版本不支持这些字段，请升级 Claude Code，本工具不会退回不安全的路径拼接方式。
-
-已有通知渠道配置时，无需重新输入凭据：
+如果已有渠道配置，可单独管理集成，无需再次输入凭据：
 
 ```sh
 dev-notify integration claude-code install
@@ -118,130 +74,100 @@ dev-notify integration claude-code status
 dev-notify integration claude-code remove
 ```
 
-`install` / `remove` 可加 `--yes` 跳过确认，供自动化或 `update` 的维护流程使用。
+`install`／`remove` 可加 `--yes` 跳过确认。安装后在 Claude Code `/hooks` 中确认已加载，必要时重启会话。要求 Claude Code 支持命令 hook 的 `command` + `args` 形式及 `async`。
 
-源码验证时将上述 `dev-notify` 替换为 `node dist/cli.js`。安装可用 `--config <绝对或相对路径>` 绑定指定通知配置；执行时将其解析为绝对路径并保存到 hook 参数。自定义 `DEV_NOTIFY_HOME` 的使用者应在安装时设置该变量。
+- 默认写入用户级 `~/.claude/settings.json`，对该配置目录下的项目生效；保留其他设置和 hooks。
+- 完成通知发送 Claude 提供的最终回复；等待提醒覆盖权限请求和需要输入的事件，不发送思考过程或工具结果。
+- 通知底部可含项目路径、会话名称、会话 ID 和结束时间，请确认接收人有权查看。
+- 重复安装不累加本工具的 hooks；旧工具、项目级或插件通知可能仍同时生效，需自行确认是否停用。
+- 项目或托管策略可能限制 hooks；本工具不会绕过禁用或权限策略。状态检查不等于真实事件已成功执行。
+- Claude Code 启动环境可能与手动终端不同。移动安装目录或切换 Node 后，应重新安装 hooks。
 
-- **配置范围**：默认用户级 `~/.claude/settings.json`，设置 `CLAUDE_CONFIG_DIR` 时使用该绝对目录下的 `settings.json`，覆盖该 Claude Code 配置目录下的全部项目。不会扫描或修改每个项目的设置。
-- **发送范围**：Stop 直接使用事件的 `last_assistant_message` 转发最终回复；没有正文时会发送明确的完成提示，不会用可能滞后的 transcript 补正文。仅当 footer 模板使用 `{time}` 时，才读取 transcript 尾部最后一条 assistant 记录的时间戳，不读取消息正文。不会发送思考过程或工具结果。通知底部附带项目绝对路径、会话名称（本地会话注册表可读取时）和会话 ID。启用远程回复后还会发送结构化问题、选项，以及另行授权的工具权限请求参数；它们可能含敏感信息，启用前请检查接收目标。
-- **等待提醒**：转发 `permission_prompt`、`elicitation_dialog`、`elicitation_url_dialog`、`agent_needs_input`；忽略 `idle_prompt`、认证成功等其他通知。当前会话最后一项调用为选择题、没有其他未结束调用，且结构化通知已完整投递时，按接收人抑制重复的 `permission_prompt`；飞书会单独核对投递成功及目标。短期保留已结束题目的覆盖状态，以处理迟到提醒；新一轮输入、后续其他工具调用、会话切换或交互有效期结束后不再沿用。没有覆盖到的接收人、只投递了一部分或投递失败、以及无法核验的情况，仍会发送通用提醒；其他通知类型不受影响。Notification 事件本身不包含完整选项，因此不会根据提示文字猜测答案；可靠的选项交互见下节。不支持的 MCP 表单/URL 等请求保留在本机处理。
-- **合并与移除**：保留权限、环境变量和其他 hooks；重复安装不会累加。同一用户级设置中的本工具 hooks 会在确认后更新到当前 Node、CLI 和通知配置路径。只移除带本工具标记及匹配参数结构的处理器，不删除设置文件或凭据。
-- **与旧工具共存**：旧版、项目级或插件 hooks 不会被自动删除，可能造成重复通知。安装时会提示当前用户级文件中的其他处理器；旧集成需由用户自行确认停用。
-- **事件与时序**：安装 Stop、Notification、SessionStart、UserPromptSubmit、SessionEnd、PreToolUse、PermissionRequest、PostToolUse、PostToolUseFailure、PermissionDenied，共 10 类。Notification 异步；其他事件同步登记状态。PreToolUse 只登记调用身份，不发送通知、不等待 Telegram，超时上限 10 秒；PermissionRequest 才等待远程答案。Stop 包含通知发送，可能延迟本地返回；通知/生命周期上限 120 秒。
-- **交互与失败**：PermissionRequest hook 上限 720 秒，远程答题窗口 10 分钟；普通交互终端保留原生窗口，由 Claude 仲裁先到的完整答案。hook 保持同步，不会改成 async，也不会模拟按键。没有回答、撤销授权、超时或发送失败时，都不会默认选择。内部错误会把安全摘要输出到 stderr，并以 0 退出；这里不使用会让 Stop 继续的退出码 2。当前已核对 Claude Code 2.1.316 的并行实现；其他版本、后台子任务及特殊宿主需要另行验收，不能据此推断所有宿主都并行。
-- **输入边界**：hook stdin 最多 8 MiB，接收超时 15 秒；超限拒绝而非截断。正常长正文沿用双渠道分段。`stop_hook_active: true` 的继续轮次不发送完成通知。
-- **加载限制**：安装后在 `/hooks` 检查并按界面确认，必要时重启会话。不会解除 `disableAllHooks`，也不会绕过托管策略。`status` 只检查该用户级文件，不检查运行时加载状态或网络连通性。
-- **环境和路径**：异步进程使用 Claude Code 的环境，可能与手动终端不同；环境变量优先规则不变。切换 Node 版本或移动源码/包目录后，应重新运行 `install` 更新固定路径。
-- **写入保护**：使用排他 `.dev-notify.lock`、内容快照、同目录临时文件及原子替换；无效 JSON 不会被覆盖。外部编辑器不遵守锁，安装期间请勿并发编辑。强杀或断电可能留下锁或 `.dev-notify-*.tmp`，请确认没有安装进程后再清理。
+## 远程回复与问答
 
-启用过回复时先运行 `reply disable` 撤销授权并停止桥接，再运行 `integration claude-code remove` 后卸载 npm 包；npm 卸载不会自动移除 hooks。若先卸载了包，需重新安装后移除，或在 `/hooks` 中手动处理对应条目。单独移除 hooks 不会清除通知凭据。
-
-## Claude Code 回复与选项交互
-
-已有渠道配置时，使用以下有限流程（源码使用 `node dist/cli.js` 替换 `dev-notify`）：
+**远程输入需要独立授权，不会因安装通知 hooks 自动开启。**
 
 ```sh
-dev-notify integration claude-code install
 dev-notify reply setup
 dev-notify reply start
 dev-notify reply status
 ```
 
-第一条在确认后更新到本版完整 hooks；缺少生命周期事件、Stop 仍异步、绑定其他配置或用户级 hooks 被禁用时，会拒绝启用或使用回复。普通终端回复还要求实际观察到该会话的 UserPromptSubmit，因此升级中途未登记的旧轮次可能只有通知，下一次正常提交后才开放按钮。第二条**另行授权**具体 Telegram 私聊用户。通知接收人、群聊成员、能看到飞书卡片的人不会自动获得输入权。`reply setup` 默认不授予工具权限批准能力，需要单独选择 Yes。不会自动迁移旧凭据，也不会默认同意权限。
+只授权可信的 Telegram 私聊用户，且这些用户必须在通知接收人名单中。群成员、飞书卡片查看者不会自动获得输入权。工具权限确认需要在 `reply setup` 中另行选择启用。
 
-### 普通回复
+### 回复会话
 
-- 完成通知每段都提供「💬 回复 Claude」，点击后自动进入回复状态；也可直接回复对应 Telegram 消息。飞书按钮跳到同一 Bot 的 Telegram 私聊，并通过一条普通提示清除旧的自动回复目标，不会自动拉起回复框；请长按提示或目标通知并选择「回复」后输入。手动选择的回复目标不会被清除，需要先自行关闭回复栏。通用 `send` 不附带会话回复功能。
-- Bot 启动并核验成功、会话可精确定位时才展示按钮；桥接未就绪时仍会发送普通通知，并报告安全错误。请从启用后的新通知进入；旧版消息和新授权前的映射不会被继承。
-- 文本清理换行和控制字符后作为**一次**终端输入提交；最多 4000 Unicode 字符，超限会拒绝，不会截断，也不会拆成多个任务。输入可以包含 Claude 命令，效果等同于在本机提交内容，并非只读操作。
-- Claude 工作中收到的普通回复先进入本地队列；只在 Stop 后尝试输入，普通回复不会被用来填写工具权限弹窗。排队超过 5 分钟会取消；本地提交新任务会取消尚未注入的队列，不抢占本地输入。
-- 「已排队」「已转发」「Claude 已收到回复」是三个不同状态：只有相同会话/进程、匹配文本摘要的 `UserPromptSubmit` 才会发出收到确认。收到确认说明 Claude 已经收到回复，任务完成后还会发送最终通知。确认会发回原 Telegram 私聊，并向已配置飞书发送不含回复原文的收到提示。注入失败或结果未知时，不会自动重试。
-- 映射有效期 24 小时；目标必须匹配会话 ID、PID、进程出生标识及 TTY。会话关闭或切换、PID 重用、多个匹配或目标不确定时，会拒绝提交。每个会话只保留一个未确认的远程回复；Telegram update 在处理前登记 offset，崩溃时可能丢失这条更新，但已提交的输入不会被重放。
+- 点击 Telegram 完成通知上的「💬 回复 Claude」，或直接回复该条消息。
+- 飞书的「在 Telegram 回复 Claude」会跳转到对应 Bot；按提示长按消息并选择「回复」后输入。
+- 只有桥接就绪且会话身份可核验时才显示按钮；请使用最新通知，旧消息不会自动补上按钮。
+- Claude 工作时，普通回复先排队，结束后再尝试提交。5 分钟过期、新的本地输入或目标变化会取消旧任务。
+- 单条最多 4000 个 Unicode 字符。换行和控制字符会清理，内容作为一次终端输入提交，不按 Shell 执行。
+- 「已排队」「已转发」「Claude 已收到」不同；只有收到匹配的本地输入事件后才确认 Claude 已收到。输入失败或结果未知时不自动重试。
 
-### 等待选项与自定义输入
+远程输入可以包含 Claude 命令，具有真实控制风险，不是只读功能。回复期间请避免同时在目标终端编辑或切换会话。
 
-- **AskUserQuestion**：展示实际问题和全部选项正文，长内容会分段。单选点击提交；多选逐项选择后提交；每题都有「自定义输入」。多题逐题完成，原始 `questions` 与 `answers` 通过官方 `PermissionRequest.decision.updatedInput` 回传，不会模拟方向键或 Enter。旧题按钮和过期自定义输入不会回答新题。
-- **工具权限**：仅在 `reply setup` 另外授权后，展示工具名称/参数及「本次允许」「拒绝」「自定义拒绝说明」。通过 `PermissionRequest` 输出一次性的 allow/deny；自定义说明只用于拒绝反馈，不会变相批准。不会输出 `updatedPermissions`，不会修改默认模式，也不会写入持久规则；相关操作仍受 Claude 的托管和 deny 规则限制。
-- **本地按钮不会被完整复刻**：官方明确 `permission_suggestions` 并非本地权限 UI 的完整选项列表，因此这里不会伪造「始终允许」等按钮。MCP Elicitation 表单/URL 等目前只有等待提醒，需要回到本机处理。
-- 本机原生界面始终保留。Telegram 提供「关闭远程答题（本机仍可操作）」入口；远程超时或关闭时不会默认作答。Telegram 是选项点击入口，飞书使用跳转链接，不提供飞书回调服务。
-- **两阶段反馈**：每次答案提交先报告「已登记，等待确认」；多题必须全部完成才回传。随后以 PostToolUse 的实际答案反馈「答案内容已生效」或「本次提交未生效」。两端同时提交相同答案时，只会确认内容一致，不会声称 Telegram 一定生效。权限允许以工具完成作保守确认；拒绝、取消或工具执行失败无法证明确实采用的远程决定时，会明确报告结果未知。
-- **失效与异常**：本机先答、超时或会话结束时，桥接会尝试把旧选项替换为「已处理／已超时／已失效」状态按钮，明确是否有人作答，不再接受答案；编辑失败时也会拒绝旧回调。回传后最多等待 10 分钟确认，缺少结果时反馈「暂时无法确认」，不会重放答案。反馈依赖桥接在线；网络异常、进程被强杀或撤销授权后，反馈可能无法送达。本工具不会为了补发通知而重新授权，也不会无限重发。最终反馈发送前会登记状态，发送失败记为投递未知，防止崩溃后重复发送；若只收到等待提示而没有最终反馈，请检查终端及 reply status。
-- **防误投**：PreToolUse 保存 tool_use_id 与输入摘要，PermissionRequest 仅绑定唯一匹配调用；完成事件按 tool_use_id 结束请求。缺关联、同一 prompt 内重复同内容导致歧义、字段被其他 hook 改写或调用已结束时拒绝远程答题，保留本机处理，不猜测目标。
+### 选择题与工具权限
 
-### 平台与后台服务
+- 支持实际问题的单选、多选、逐题自定义输入；本机界面仍可操作。
+- 单独启用工具权限确认后，可「本次允许」「拒绝」或填写拒绝说明，不提供永久批准规则。
+- 超时、撤销授权或无法核验目标时，不默认回答或批准；旧按钮不能处理新问题。
+- 答案先显示已登记，再根据 Claude 的实际结果反馈生效、未生效或未知。
+- MCP 表单／URL 等未支持的交互需回到本机处理。
 
-- **Windows**：原生 `claude` 进程，系统 PowerShell 编译控制台帮助类，核验出生标识后使用 AttachConsole / WriteConsoleInputW，不抢占前台。共享控制台存在另一个 claude 进程时会拒绝。Node 托管的旧 CLI 不在当前可验证输入范围。
-- **macOS**：核验前台 claude 进程及精确 TTY，优先 tmux 字面粘贴缓冲区，否则使用 Ghostty AppleScript；文本不会作为 shell 参数执行。系统可能要求辅助功能/Automation 权限，权限被拒绝时不会改投任意窗口。两条适配器已做模拟验证，**尚未做 macOS 实机输入验收**。
-- 不支持 VS Code 集成终端、WSL、SSH、其他终端的自动回退；元数据缺失、CLI 升级改变内部会话文件格式时，会拒绝输入，不会扫描 transcript 猜测目标。原生输入与本地活动不是原子操作：回复期间请不要在相同终端手工编辑或切换会话。
-- 桥接是本机 Node 后台进程，不监听公网端口，也不设置系统自启动。明确授权后可手动 `reply start`，也可由支持的后续 hook 事件按需启动。24 小时没有 Telegram 更新会退出；连续轮询失败 5 次或遇到 409 冲突会退出，状态中只报告安全摘要。
-- 一个 Bot 只能有一个 getUpdates 消费者。请先自行停用旧版桥接和其他机器上的同 Bot 实例；同一用户的本工具会用 Bot 指纹锁互斥，但无法跨机器或约束不遵守锁的程序。本工具不会删除 webhook，也不会强制结束其他进程；多个实例共用会导致冲突和消息丢失。
+### 平台和桥接
+
+- Windows：支持原生 `claude` 控制台；共享控制台中有多个 Claude 进程时拒绝输入。
+- macOS：支持前台原生 `claude` 的 tmux／Ghostty。Ghostty 可能需要系统 Automation 授权；拒绝授权时不会转投其他窗口。
+- 不支持向 VS Code 集成终端、WSL、SSH 或其他终端自动回退。macOS 原生输入及其他兼容性限制见 [SECURITY.md](SECURITY.md)。
+- 桥接是本机后台进程，不监听公网端口，也不配置系统开机自启；后续受支持的事件可以按需启动。
+- **同一个 Bot 只能有一个更新消费者**。不同机器的回复桥接请使用不同 Bot，不要并行运行 `reply start` 与 `reply run`。
 
 ```sh
-dev-notify reply stop       # 请求停止本次桥接，不撤销授权；后续 hook 可再启动
-dev-notify reply disable    # 确认后撤销授权并请求停止；彻底关闭用此命令
-dev-notify reply run        # 前台诊断启动/网络问题，不与 start 实例并行
+dev-notify reply stop    # 停止当前桥接；保留授权，后续事件可重新启动
+dev-notify reply disable # 确认后撤销授权并请求停止
+dev-notify reply run     # 前台排障；先确认没有其他桥接运行
 ```
 
-停止通过实例随机标识的控制文件请求，不会根据旧 PID 强制结束进程。已经开始的系统输入无法撤回。0.2.4使用独立心跳区分进程存活与就绪；心跳过期不会被当作进程已退出，启动最多等待 15 秒且不被旧实例错误提前中断。`status` 仍只反映本地状态，Telegram 端到端和真实 Claude 需另行验收。
+## 配置、语言和环境变量
 
-授权在 `<通知配置>.reply.json`，消息/会话/offset/队列/交互状态在 `<通知配置>.reply-data/`；Bot 锁在 `paths` 所示 data 目录的 `reply-bots/`。排队回复原文、问题、工具输入和待回传答案会短暂写入本地状态；提交前会移除普通回复原文；结构化交互保留到完成或确认超时，随后清除问题、参数与答案正文，短期保留结果收据和消息 ID，用于反馈及拒绝旧按钮。有效期检查只是逻辑判断，停机后文件不会自动擦除。POSIX 使用 0700/0600，Windows 依赖账号目录 ACL；同一用户的其他进程仍然可以读取。请不要提交、共享或打包这些文件（已加入忽略规则及 npm 白名单）。
+```sh
+dev-notify paths
+dev-notify language       # 查看当前语言
+dev-notify language zh    # 保存为中文；en 为英文
+```
 
-0.2.6 在会话身份暂时无法核验时暂停远程输入，不把查询失败当作进程退出；尚未提交的排队回复保留原有 5 分钟有效期，仅在后续生命周期事件重新核验同一身份后恢复尝试。新的本地输入仍取消旧队列；已提交或结果未知的输入不会重新排队。hooks 就绪检查还核验 Node/CLI 文件存在、可读及 POSIX Node 执行权限；这只是本地快照，不保证 Windows 执行策略、项目/托管策略或真实事件执行成功。设置锁的权限错误与已有锁会分别报告。
-
-测试版 `0.2.7-beta.1` 针对桥接初始化的 `getWebhookInfo`／`getMe` 只读查询，在明确识别到连接重置 `ECONNRESET` 时延迟 500 毫秒重试一次；两种查询共用一次启动额度。停止请求、撤销或变更授权会阻止再次请求；其他错误不会触发这项规则。通知发送、初始更新消费和终端输入不增加重试；不能据此保证故障恢复或判断连接被谁重置。
-
-诊断测试版 `0.2.7-beta.0` 另外保留 `<通知配置>.reply-data/notification-failures/<会话 ID>.json` 的最近一次通知失败，以及 `bridge-failures/start.json`、`bridge-failures/worker.json` 的最近一次桥接父进程/工作进程失败。后续成功不会清除这些记录；阶段、耗时和结果只用于事后诊断，不表示当前仍有故障，也不触发重试或补发。每个会话/来源只保留一份，文件不自动过期删除，可随专属回复状态人工清理；已被旧版覆盖的历史失败无法补回。
-
-0.2.6 会在 `<通知配置>.reply-data/notification-diagnostics/<会话 ID>.json` 保存每个会话最后一份完成通知诊断，包含时间、按钮原因代码和渠道 API 确认摘要，不包含正文、收件人、Token 或原始异常。该记录不是历史消息队列，不用于补发；不同会话互不覆盖，同一会话保留最后写入的一份。文件不会自动过期删除，随专属回复状态一起人工清理；Windows 仍依赖目录 ACL。
-
-强杀可能留下锁。0.2.4可在启动时自动回收有效 Bot 锁，但必须先确认原 PID 已不存在；权限未知、PID 复用为活进程、坏锁及残留 `.recover` 恢复门闩一律保守拒绝。状态写入锁等其他锁不自动回收，需先确认对应进程已退出再人工处理。不能在进程运行时删除锁。`reply disable` 不会擅自删除历史状态；需要清除时，请先禁用或停止，确认后手工删除上述专属文件。清理凭据、移除 hooks 和删除回复状态是三项独立操作。
-
-## 系统凭据与兼容性
-
-Node 版使用 **Windows Credential Manager / macOS Keychain**，通过原生 Node API 传递秘密，不将秘密放进命令行参数，不写入明文 JSON。
-
-- 底层库：`@napi-rs/keyring`，固定版本记录于 lockfile。
-- service：`dev-notify.node.credentials.v1`；account：随机 32 位十六进制 ID。
-- 配置引用：`"credentials": {"backend":"keyring","id":"..."}`。
-- 为兼容 Windows 通用凭据 blob 大小，凭据包限制 2400 UTF-8 字节，超限报错，不截断。
-- 原生组件加载失败、存储锁定或拒绝访问时会明确报错，不会降级为明文文件。macOS 可能要求系统授权；离线环境仍可能出现系统提示。
-- 默认不枚举系统条目，只访问当前引用或本次新建的随机条目。
-
-旧版原型使用 `backend: "system"`，Windows 上是 DPAPI 文件，与 Node Credential Manager 不是同一存储。Node 不会读取或删除它。遇到旧配置时，可以运行 `setup` 重新输入并生成 Node 引用，原凭据保持不变。此兼容性限制不影响已使用 `keyring` 引用的配置。
-
-## 路径、模板和环境变量
-
-| 平台 | 配置 | 数据预留目录 |
+| 平台 | 默认配置 | 数据目录 |
 | --- | --- | --- |
 | Windows | `%APPDATA%\DevNotify\config.json` | `%LOCALAPPDATA%\DevNotify\data` |
 | macOS | `~/Library/Application Support/DevNotify/config/config.json` | `~/Library/Application Support/DevNotify/data` |
 
-`DEV_NOTIFY_HOME` 必须是绝对路径，配置位于其 `config/config.json` 下。也可用 `--config <路径>` 显式指定文件。显式文件缺失时报错；默认文件缺失时允许仅使用环境变量。
+使用 `--config <路径>` 指定配置，或将 `DEV_NOTIFY_HOME` 设为绝对路径，配置位于其 `config/config.json`、数据位于 `data/`。`CLAUDE_CONFIG_DIR` 可指定 Claude Code 配置的绝对目录，默认 `~/.claude`。
 
-```json
-{
-  "version": 1,
-  "language": "zh",
-  "notifications": {
-    "events": {"stop": true, "waiting": true},
-    "projects": {"allow": [], "deny": []}
-  },
-  "telegram": {"enabled": true, "chat_ids": [], "token_env": "TELEGRAM_BOT_TOKEN"},
-  "feishu": {"enabled": true, "webhook_env": "FEISHU_WEBHOOK", "secret_env": "FEISHU_SECRET"}
-}
+| 环境变量 | 用途 |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID`／`TELEGRAM_CHAT_IDS` | 单个／逗号分隔的接收人 |
+| `FEISHU_WEBHOOK` | 飞书中国站自定义机器人 Webhook |
+| `FEISHU_SECRET` | 可选签名密钥 |
+| `DEV_NOTIFY_LANG` | 当前环境语言，`zh` 或 `en` |
+| `DEV_NOTIFY_HOME` | 本工具配置与数据根目录 |
+| `CLAUDE_CONFIG_DIR` | Claude Code 配置目录 |
+
+Windows 还可用 `APPDATA`／`LOCALAPPDATA` 覆盖默认根目录；Linux 辅助路径可用 `XDG_CONFIG_HOME`／`XDG_STATE_HOME`。
+
+凭据和接收人环境变量显式存在时优先，**空值也会覆盖**。接收人变量会完全替换文件名单；两种接收人变量同时存在时合并去重。大整数 chat_id 请用字符串。配置中的 `token_env`、`webhook_env`、`secret_env` 可指定自定义变量名。不要将 Token、Webhook 或签名密钥直接写入 JSON。
+
+语言优先级：`--lang zh|en` > `DEV_NOTIFY_LANG` > 配置 `language` > 默认中文。
+
+自动化可生成不含凭据的模板，模板不会覆盖已有配置：
+
+```sh
+dev-notify setup --template --yes
 ```
-
-### 界面语言
-
-`--lang zh|en` 可临时切换单次命令的界面语言，`DEV_NOTIFY_LANG=zh|en` 可为当前环境设置语言；持久设置保存在配置的 `language` 字段（`zh` 或 `en`）。优先级为 `--lang` > `DEV_NOTIFY_LANG` > 配置 > 默认 `zh`。运行 `dev-notify language` 查看当前生效语言，`dev-notify language zh|en` 保存切换。CLI 输出、错误提示、通知内容、交互按钮和回复桥接消息都会使用所选语言；`setup` 创建新配置时会保存当前语言。
 
 ### 通知过滤与静默时段
 
-`notifications` 段只影响 Claude Code 的普通完成通知和等待提醒；`send` 命令、远程回复桥接、答题和工具权限处理不受影响。所有字段都是可选的，省略时保持默认全量发送。
-
-- `events.stop` 控制 Stop 完成通知，`events.waiting` 控制权限请求等等待提醒；默认都为 `true`。
-- `projects.allow` / `projects.deny` 使用绝对路径前缀匹配，`deny` 优先。`allow` 非空时只发送这些目录下的通知；项目路径缺失时 `allow` 不放行、`deny` 不匹配。路径按本机平台解析，Windows 不区分大小写。
-- `quiet_hours` 使用本机本地时间，支持跨午夜；`start` 与 `end` 相同表示不启用。静默期间不发送普通通知，也不会生成回复按钮；桥接、本地答题和权限处理仍会运行，但等待提醒会被抑制。需要远程处理权限请求时，请不要依赖静默时段内的通知。
+以下配置只影响 Claude Code 的普通通知，不影响通用 `send` 或远程输入授权：
 
 ```json
 "notifications": {
@@ -251,93 +177,61 @@ Node 版使用 **Windows Credential Manager / macOS Keychain**，通过原生 No
 }
 ```
 
-### 消息模板
+省略时默认发送完成和等待通知。项目列表按绝对路径前缀匹配，`deny` 优先；Windows 不区分大小写。静默时段按本机时间计算，可跨午夜；期间不发送普通通知或生成回复按钮，但桥接和交互仍运行，不应依赖静默期间的通知处理权限请求。
 
-`templates.footer` 可替换 Claude Code 通知底部的项目、主题和会话信息。省略时使用内置的双语格式；设为空字符串会完全隐藏底部信息。模板最多 1000 个字符，支持换行，可用变量：
-
-- `{project}`：项目绝对路径
-- `{topic}`：会话名称（本地会话注册表可读取时）
-- `{session}`：会话 ID
-- `{time}`：时间，格式为 `YYYY-MM-DD HH:mm:ss`。Stop 通知优先读取本机 transcript 尾部最后一条 assistant 记录的时间，即 Claude Code 实际结束时间；transcript 不可读或时间异常时回退到 hook 触发时间，而不是发送通知的时间。Notification 使用 hook 触发时间。只有模板包含 `{time}` 时才会读取 transcript。
-
-未知占位符保持原样。变量值会清理控制字符，超过长度限制的部分截断并加省略号。
+### 通知底部模板
 
 ```json
 "templates": {"footer": "项目：{project}\n结束：{time}\n会话：{session}"}
 ```
 
-### 凭据与接收人
+支持 `{project}`、`{topic}`、`{session}`、`{time}`，最多 1000 字符；空字符串隐藏底部。`{time}` 使用本机时间格式 `YYYY-MM-DD HH:mm:ss`，完成通知优先使用 Claude 实际结束时间，读取不到时回退到事件触发时间。只有使用该变量才读取本地会话文件尾部的时间戳，不读取或发送正文。
 
-- `TELEGRAM_BOT_TOKEN`：Telegram Bot Token。
-- `TELEGRAM_CHAT_ID`、`TELEGRAM_CHAT_IDS`：主接收人和逗号分隔接收人，任一显式存在即完全替换文件名单；两者同时存在时合并去重。显式空名单撤销接收人。大整数 chat_id 必须用字符串。
-- `FEISHU_WEBHOOK`：飞书中国站 HTTPS 自定义机器人地址。
-- `FEISHU_SECRET`：可选签名密钥。
-- 配置中的 `token_env`、`webhook_env`、`secret_env` 可把上述变量名改成其他合法的环境变量名。
-
-### 路径
-
-- `DEV_NOTIFY_HOME`：绝对路径，配置位于其 `config/config.json`，数据位于其 `data/`。
-- `CLAUDE_CONFIG_DIR`：Claude Code 配置目录的绝对路径，hooks 写入其中的 `settings.json`；未设置时为 `~/.claude`。
-- Windows 还可用 `APPDATA`、`LOCALAPPDATA` 覆盖默认配置/数据根目录；Linux 开发辅助路径可用 `XDG_CONFIG_HOME`、`XDG_STATE_HOME`。
-
-凭据环境变量显式存在时优先，包括空值；不存在时才延迟读取系统引用，同次配置加载只读取一次。禁用渠道不会仅为读取系统秘密而打开后端。Token、webhook 和 secret 不能直接写进 JSON。
-
-## 更新与清理安全
-
-保存流程：写入新随机系统条目 → 校验可读 → 原子替换 JSON → 删除旧 Node 条目。配置切换前失败保留旧配置，并尝试清理本次新凭据；清理失败只报告非敏感引用 ID。旧版原型的条目从不删除。
-
-配置写入使用排他 `.setup.lock`，写入前及切换前都会核对原文件。请在向导保存期间避免用编辑器并发修改配置；编辑器不遵守这个锁。断电或强杀可能留下锁或孤立条目，存储和 JSON 也不是跨系统原子事务。确认没有向导运行后，才能处理残留锁；程序不会主动扫描或删除未知条目。
+## 排障
 
 ```sh
-dev-notify credentials clear
+dev-notify doctor
+dev-notify status
+dev-notify integration claude-code status
+dev-notify reply status
 ```
 
-清理必须交互确认，先去除当前 JSON 引用，再尝试删除其 Node 条目；环境变量保持不变。共享同一旧引用的配置副本也会受影响，操作前会告知。删除失败会明确警告，不会显示为已清理。
+`doctor`／`status` 检查本地配置，可能触发系统凭据授权，但不验证网络。桥接显示就绪，也不保证每条通知已经投递成功。
 
-## 格式、发送与退出码
+- **没有回复按钮**：确认已授权、桥接就绪、hooks 实际加载，并在目标会话正常提交一次新任务；会话无法核验时不会开放输入。
+- **只有一个渠道收到**：检查该次通知的渠道错误。各渠道独立投递；失败消息不会因后来恢复而自动补发。
+- **更新后入口不可用**：核对 `dev-notify --version` 和当前 Node 环境，重新安装 hooks；不要仅凭 hooks 条目存在认定可用。
+- **权限或锁错误**：先检查目录所有者、访问权限及是否仍有进程运行，不要一律删除锁或用 `sudo`／管理员身份重跑。
+- **网络错误**：保留安全错误提示和时间；只读身份查询的有限重试不等于通知发送会自动重试。
 
-支持标题、粗体、斜体、删除线、行内代码、代码块、引用、列表、任务列表、等宽表格。Telegram 按 UTF-16 长度，飞书按 UTF-8 请求预算分段，emoji 不会从代理对中切开。跨段标签会补齐，标题带 `(1/N)`，每段保留底部信息。链接显示为“文字 (URL)”，纯文本回退时保留地址。这不是完整的 CommonMark 引擎；复杂的转义或嵌套可能无法完全按原样排版。
+本地诊断位于 `<配置文件>.reply-data/`：`notification-diagnostics/` 保存最新通知摘要，`notification-failures/` 保存每会话最近失败，`bridge-failures/` 保存最近的启动／工作进程失败。恢复成功不会清除保留的失败，排障时应核对时间。这些文件不含正文、凭据或收件人，不用于补发；不会自动过期删除，可在停用并确认后随回复状态清理。向他人提供前仍请检查内容，不要共享完整配置、凭据或会话状态。
 
-单接收人中途失败会停止其后续分段，Telegram 继续发送给其他接收人。HTML/卡片格式错误时会回退；Telegram 明确返回 `429` 时，按服务端要求有限重试。超时后不会盲目重发，也无法承诺恰好一次投递。
+## 卸载与清理
 
-- `send` 会把指定内容上传到第三方，请检查接收人与敏感信息。
-- `--dry-run` 不输出正文/凭据，不联网。
-- `doctor` / `status` 可能读取本地凭据，不验证网络和实际授权。
-- 文件缺失、配置损坏或 UTF-8 错误会立即报错，不会退回为只发送标题。
+```sh
+dev-notify reply disable
+dev-notify integration claude-code remove
+dev-notify credentials clear
+npm uninstall -g @quecue/dev-notify
+```
+
+前几步仅在已启用对应功能、并希望清理时执行。凭据清理需要交互确认，共享同一凭据引用的配置也会受影响；环境变量不受影响。npm 卸载不会自动删除用户配置、凭据或回复历史。
+
+## 格式与退出码
+
+支持常用 Markdown、代码块、列表和表格；长消息自动分段，不保证复杂 Markdown 完全还原。单个接收人发送失败会停止其后续分段，其他接收人仍会尝试。明确的格式拒绝或限流可能触发有界回退；网络结果未知时不盲目重发，不能保证恰好一次投递。
 
 | 代码 | 含义 |
 | --- | --- |
-| 0 | 所选已配置渠道完整发送成功，或配置/只读操作成功 |
-| 1 | 部分/全部投递失败；或 doctor/status 没有可用渠道 |
+| 0 | 所选渠道完整发送成功，或配置／只读操作成功 |
+| 1 | 投递或维护未全部成功，或状态检查未就绪 |
 | 2 | 参数、配置、文件或凭据操作错误 |
 | 130 | 用户取消 |
 
-向导保存成功后测试通知失败，命令仍以保存成功结束，并明确显示测试失败，两者会清楚区分。保存后取消 hook 配置仍返回 0 并保留渠道；hook 配置出错返回 1，明确提示渠道已保存。集成 `status` 在条目缺失、重复或当前用户级文件禁用 hooks 时返回 1。内部 hook 处理失败通过 stderr 报告，并采用不阻止宿主的退出码；这不代表异步或立即返回，等待远程答案的同步 hook 仍会在约定超时内等待。
+Claude Code hooks 会报告安全错误，但不以阻止宿主的退出码结束；因此 hook 退出成功不等于通知送达。向导保存与测试通知结果也会分别报告。
 
-## 开发与验证
+## 反馈与贡献
 
-从 [GitHub 源码仓库](https://github.com/QueCue/dev-notify)克隆后，在仓库目录执行，npm 将按锁文件安装固定版本依赖，无需检出通讯库仓库：
+问题反馈：[GitHub Issues](https://github.com/QueCue/dev-notify/issues)。请提供版本、系统和脱敏后的错误，不要提交 Token、Webhook 或消息正文。
 
-```sh
-npm ci --ignore-scripts
-npm run build
-node dist/cli.js setup
-node dist/cli.js doctor
-node dist/cli.js send --title "构建完成" --content "安装包已生成"
-npm test
-npm pack --dry-run
-```
-
-其他 CLI 示例中的 `dev-notify` 也可替换为 `node dist/cli.js`，无须全局安装。
-
-`node-src/` 是 TypeScript 源码，`dist/` 是编译输出，`test-js/` 是测试。默认测试只用假凭据和模拟后端/网络；本机原生假条目往返测试需显式设置 `DEV_NOTIFY_NATIVE_TEST=1`，且只在 Windows 启用，使用随机 ID，结束后清理。
-
-0.2.6 源码的 npm 白名单仅包含本应用 CLI 编译 JS、README、SECURITY、CHANGELOG、LICENSE 和 package.json；不包含通讯库副本、测试、真实配置、密文或依赖 tarball。运行时依赖由 npm 单独解析。已发布版本的包内容以对应版本为准。没有 postinstall、自动启动或自写下载脚本；预编译原生依赖由 npm 的平台 optional 包解析，**请勿使用 `--omit=optional`**。macOS x64/arm64 和 Windows x64/arm64 预编译包由依赖提供，提供包并不等同于本项目已完成实机验收。
-
-各已发布版本的验证结果见 [CHANGELOG.md](CHANGELOG.md)。0.2.6 源码在 Windows x64、Node 24 下的回归记录为 276 项：275 通过、0 失败、1 项需显式启用的原生凭据测试跳过；该记录不代表所有平台的实机验收。
-
-自动化覆盖临时 hooks、回复/授权/过期/防重放、单选/多选/自定义、单次权限 JSON、双端竞争、反馈异常及按接收人的重复提醒去重。实际 CLI 子进程完成后台 start → PreToolUse 登记 → PermissionRequest → 假 Bot 按钮 → JSON 答案 → 模拟 PostToolUse → 最终反馈 → 通知去重/后续工具提醒 → stop；该闭环使用模拟网络和进程元数据，不能替代实机输入验证。Windows 原生输入帮助类的自动化测试只做编译/布局验证，不会执行真实 Send。
-
-实机验收与自动化结果分别记录：Windows 原生 Claude Code 2.1.316 与真实 Telegram 的问答验收覆盖本机优先、远端优先、多选、自定义、不同答案竞争及延迟通用提醒去重；这些问答测试不验证普通回复的终端输入注入。macOS 两条终端适配器只有模拟验证；macOS 实机、Node 最低版本、版本管理器切换及工具权限应答实机尚未完成验收，本项目也尚未完成安全审计。
-
-采用 MIT，见 [LICENSE](LICENSE)。安全边界见 [SECURITY.md](SECURITY.md)。源码变更只有发布新 npm 版本后才提供给安装用户；普通分支推送不发布，符合版本规则的 `v*` 标签会触发仓库的发布工作流。维护者流程见 [npm 发布说明](https://github.com/QueCue/dev-notify/blob/main/.github/NPM_PUBLISH.md)。
+源码构建与测试见[贡献指南](https://github.com/QueCue/dev-notify/blob/main/CONTRIBUTING.md)，版本修复记录见 [CHANGELOG.md](CHANGELOG.md)。采用 MIT，见 [LICENSE](LICENSE)；详细安全边界见 [SECURITY.md](SECURITY.md)。

@@ -2,6 +2,16 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.7-beta.2 — 2026-11-07
+
+First-notification handling prerelease; updates npm `beta` only, without moving stable `latest`. The real macOS first-notification scenario still awaits validation.
+
+- Extend the single read-only retry for confirmed `ECONNRESET` to completion notifications' `getMe` button identity lookup, rather than only bridge initialization. Revalidate authorization, session identity, input tracking, and bridge readiness after the delay without weakening access controls. Notification summaries record the count as `identityRetries`.
+- Ordinary Telegram notifications and bridge requests share the safe connection-reset classification, but notification sending is still not retried on network reset. Other channels are not mislabeled as Telegram resets; the shared communication-library dependency is unchanged.
+
+- Refocus both READMEs on user installation, usage, and necessary troubleshooting. Move source-build/testing guidance to CONTRIBUTING and keep verification history in CHANGELOG instead of adding iteration notes to README.
+- Regression totals 320 tests: 319 passed, 0 failed, and 1 opt-in native credential test skipped. Coverage includes full first-notification reset/recovery, bounded persistent failure without message replay, authorization rechecks, and README documentation boundaries.
+
 ## 0.2.7-beta.1 — 2026-11-07
 
 Connection-reset handling prerelease; updates npm `beta` only while stable `latest` remains `0.2.6`. macOS real-machine validation is still pending.

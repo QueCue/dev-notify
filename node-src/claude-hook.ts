@@ -94,7 +94,11 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
   const now = context.now?.() ?? new Date();
   const diagnostic: NotificationDiagnostic = { version: 1, updated: now.getTime(), reply: 'not-attempted', channels: {} };
   const options = { send: context.send, ...context.reply, env: context.env, err: context.err, response: context.response,
-    replyDiagnostic: (code: ReplyDiagnosticCode) => { diagnostic.reply = code; context.reply?.replyDiagnostic?.(code); } };
+    replyDiagnostic: (code: ReplyDiagnosticCode) => {
+      if (code === 'getme-reset-retry') diagnostic.identityRetries = (diagnostic.identityRetries ?? 0) + 1;
+      else diagnostic.reply = code;
+      context.reply?.replyDiagnostic?.(code);
+    } };
   try {
     await lifecycleHook(data, configFile, options);
     await interactionHook(data, configFile, options);

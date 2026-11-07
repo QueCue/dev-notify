@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { TelegramApiError, HttpError, TransportError } from '@quecue/notify-core';
 import { safeFailureReason, safeDeliveryReason, ReplyPreparationError, saveNotificationDiagnostic, TelegramConnectionResetError } from '../dist/notification-diagnostics.js';
 import { telegramApi } from '../dist/reply-telegram.js';
+import { makePlan, deliver } from '../dist/channels.js';
 import { setLocale, t } from '../dist/i18n.js';
 
 globalThis.fetch = async () => { throw new Error('禁止真实网络'); };
@@ -101,6 +102,27 @@ test('sendMessage连接重置不自动重试，即使收到结果未知', async 
   try {
     await assert.rejects(telegramApi('123:FAKE_ONLY')('sendMessage', { chat_id: 111, text: 'FAKE_ONLY' }), TelegramConnectionResetError);
     assert.equal(calls, 1);
+  } finally { globalThis.fetch = previous; }
+});
+test('普通通知发送保留reset分类，但默认投递器绝不因此重发', async () => {
+  const previous = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async () => { calls++; throw new TypeError('PRIVATE_URL_TOKEN', { cause: Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' }) }); };
+  try {
+    const config = { telegram: { token: '123:FAKE_ONLY', chatIds: ['111'] }, feishu: { webhook: '', secret: '' } };
+    const plan = makePlan('telegram', { title: '测试', content: '测试', footer: '', level: 'success' }, config);
+    const result = await deliver(plan, config);
+    assert.equal(result.ok, false); assert.equal(result.sent, 0); assert.equal(calls, 1);
+    assert.match(safeDeliveryReason(result.error), /ECONNRESET/);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE|FAKE_ONLY/);
+  } finally { globalThis.fetch = previous; }
+});
+test('非Telegram网络reset不错误标记为Telegram连接重置', async () => {
+  const previous = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async () => { calls++; throw Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' }); };
+  try {
+    const config = { telegram: { token: '', chatIds: [] }, feishu: { webhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/FAKE_ONLY', secret: '' } };
+    const result = await deliver(makePlan('feishu', { title: '测试', content: '测试', footer: '', level: 'success' }, config), config);
+    assert.equal(result.ok, false); assert.equal(calls, 1); assert.equal(safeDeliveryReason(result.error), t('diagnostic.network'));
   } finally { globalThis.fetch = previous; }
 });
 test('异常状态码不作为任意文字或无界数字输出', () => {

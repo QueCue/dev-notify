@@ -6,12 +6,13 @@ import { atomicJson, replyDirectory } from './reply-state.js';
 
 export type ReplyDiagnosticCode = 'not-attempted' | 'disabled' | 'session-unverified' | 'state-missing'
   | 'session-working' | 'input-unobserved' | 'identity-changed' | 'bridge-unready' | 'getme-failed'
-  | 'check-failed' | 'attached';
+  | 'check-failed' | 'getme-reset-retry' | 'attached';
 export interface NotificationDiagnostic {
   version: 1;
   updated: number;
   reply: ReplyDiagnosticCode;
   replyReason?: string;
+  identityRetries?: number;
   channels: Partial<Record<'telegram' | 'feishu', { status: 'complete' | 'incomplete' | 'failed'; sent?: number; planned?: number; reason?: string }>>;
 }
 export async function saveNotificationDiagnostic(file: string, session: unknown, value: NotificationDiagnostic): Promise<void> {
@@ -42,6 +43,19 @@ export class TelegramRequestError extends ConfigError {
     super(t(code === 409 ? 'reply.telegramConflict' : 'reply.telegramRequestFailed'));
   }
 }
+export function connectionReset(error: unknown): boolean {
+  const pending: unknown[] = [error], seen = new Set<unknown>();
+  for (let checked = 0; pending.length && checked < 16; checked++) {
+    const value = pending.shift();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    const cause = value as { code?: unknown; cause?: unknown; errors?: unknown };
+    if (cause.code === 'ECONNRESET') return true;
+    pending.push(cause.cause);
+    if (Array.isArray(cause.errors)) pending.push(...cause.errors.slice(0, 8));
+  }
+  return false;
+}
 export class TelegramConnectionResetError extends TransportError {
   constructor() { super(t('diagnostic.connectionReset')); }
 }
@@ -67,6 +81,7 @@ export class ReplyPreparationError extends ConfigError {
 }
 // 公共库目前只返回安全文本而非错误类型。仅匹配本地已知值，不转发任意字符串。
 export function safeDeliveryReason(error: unknown): string {
+  if (error === t('diagnostic.connectionReset')) return t('diagnostic.connectionReset');
   for (const key of ['channels.network', 'channels.noResponse', 'channels.responseTooLarge', 'channels.notJsonObject'] as const) {
     if (error === t(key)) return t('diagnostic.network');
   }

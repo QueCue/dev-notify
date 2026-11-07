@@ -16,6 +16,7 @@ import { processIdentity, findSession, lookupSession, SessionLookupError, findSe
 import { telegramApi } from '../dist/reply-telegram.js';
 import { runBridge, bridgeStatus, stopBridge } from '../dist/reply-bridge.js';
 import { makePlan, deliver, TransportError } from '../dist/channels.js';
+import { TelegramConnectionResetError } from '../dist/notification-diagnostics.js';
 import { main } from '../dist/cli.js';
 import { configureClaudeCode, replyHooksReady } from '../dist/claude-code.js';
 import { registerToolCall, matchingCall, callKey, completeToolCall, drainInteractionFeedback } from '../dist/reply-outcomes.js';
@@ -752,6 +753,93 @@ for (const scenario of [
   }
 });
 
+test('首次通知getMe连接重置后只读重试恢复，第二次通知正常且发送不重复', async t => {
+  const ctx = await temp(t), previous = globalThis.fetch, waits = [], requests = [];
+  await atomicJson(ctx.file, { ...CONFIG, telegram: { enabled: true, chat_ids: ['111'] }, feishu: { enabled: true } });
+  const env = { ...ctx.env, FEISHU_WEBHOOK: 'https://open.feishu.cn/open-apis/bot/v2/hook/FAKE_ONLY' };
+  let reset = true, messageId = 1000;
+  globalThis.fetch = async url => {
+    const telegram = new URL(url).hostname === 'api.telegram.org';
+    const method = telegram ? new URL(url).pathname.split('/').pop() : 'feishu'; requests.push(method);
+    if (method === 'getMe' && reset) { reset = false; throw new TypeError('PRIVATE', { cause: Object.assign(new Error('PRIVATE_TOKEN'), { code: 'ECONNRESET' }) }); }
+    return new Response(JSON.stringify(!telegram ? { code: 0 } : { ok: true, result: method === 'getMe' ? { username: 'FakeTestBot' } : { message_id: ++messageId } }));
+  };
+  try {
+    for (const turn of [1, 2]) {
+      await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Stop', session_id: TARGET.session,
+        last_assistant_message: '首次通知模拟', cwd: TARGET.cwd })), ctx.file, {
+        env, err: text => assert.fail(text), send: deliver,
+        reply: { session: async () => TARGET, bridge: async () => true, sleep: async ms => waits.push(ms) },
+      });
+      const diagnostic = JSON.parse(await readFile(path.join(replyDirectory(ctx.file), 'notification-diagnostics', TARGET.session + '.json'), 'utf8'));
+      assert.equal(diagnostic.reply, 'attached'); assert.equal(diagnostic.identityRetries, turn === 1 ? 1 : undefined);
+      assert.equal(diagnostic.channels.telegram.status, 'complete'); assert.equal(diagnostic.channels.feishu.status, 'complete');
+    }
+    assert.deepEqual(requests, ['getMe', 'getMe', 'sendMessage', 'feishu', 'getMe', 'sendMessage', 'feishu']);
+    assert.deepEqual(waits, [500]);
+  } finally { globalThis.fetch = previous; }
+});
+test('首次通知持续reset时保留精确发送原因，下一次正常；不自动重发通知', async t => {
+  const ctx = await temp(t), previous = globalThis.fetch;
+  await atomicJson(ctx.file, { ...CONFIG, telegram: { enabled: true, chat_ids: ['111'] }, feishu: { enabled: true } });
+  const env = { ...ctx.env, FEISHU_WEBHOOK: 'https://open.feishu.cn/open-apis/bot/v2/hook/FAKE_ONLY' };
+  let turn = 1, getMe = 0, sends = 0;
+  globalThis.fetch = async url => {
+    const tg = new URL(url).hostname === 'api.telegram.org', method = tg ? new URL(url).pathname.split('/').pop() : 'feishu';
+    if (method === 'getMe') getMe++;
+    if (method === 'sendMessage') sends++;
+    if (tg && turn === 1) throw new TypeError('PRIVATE', { cause: Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' }) });
+    return new Response(JSON.stringify(tg ? { ok: true, result: method === 'getMe' ? { username: 'FakeTestBot' } : { message_id: 1100 } } : { code: 0 }));
+  };
+  try {
+    for (turn = 1; turn <= 2; turn++) {
+      await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Stop', session_id: TARGET.session, last_assistant_message: 'FAKE_BODY' })), ctx.file, {
+        env, err: () => {}, send: deliver, reply: { session: async () => TARGET, bridge: async () => true, sleep: async () => {} },
+      });
+      const text = await readFile(path.join(replyDirectory(ctx.file), 'notification-diagnostics', TARGET.session + '.json'), 'utf8');
+      const d = JSON.parse(text);
+      assert.equal(d.reply, turn === 1 ? 'getme-failed' : 'attached');
+      assert.equal(d.channels.telegram.status, turn === 1 ? 'incomplete' : 'complete');
+      assert.equal(d.channels.feishu.status, 'complete');
+      if (turn === 1) assert.match(d.channels.telegram.reason, /ECONNRESET/);
+      assert.doesNotMatch(text, /PRIVATE|FAKE_BODY|FAKE_ONLY/);
+    }
+    assert.equal(getMe, 3); assert.equal(sends, 2); // 两轮各只尝试发送一次，不自动重发。
+    const failure = JSON.parse(await readFile(path.join(replyDirectory(ctx.file), 'notification-failures', TARGET.session + '.json'), 'utf8'));
+    assert.equal(failure.reply, 'getme-failed'); assert.equal(failure.identityRetries, 1);
+  } finally { globalThis.fetch = previous; }
+});
+for (const change of ['revoke', 'generation', 'identity', 'working', 'untracked', 'unverified', 'bridge'])
+test(`按钮查询重试前重新核验：${change}`, async t => {
+  const ctx = await temp(t), codes = []; let calls = 0, changed = false;
+  const notification = { title: '完成', content: '测试', footer: '', level: 'success' };
+  const binding = await attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, {
+    env: ctx.env, session: async () => changed && change === 'identity' ? { ...TARGET, birth: 'NEW' } : TARGET,
+    bridge: async () => !(changed && change === 'bridge'), replyDiagnostic: code => codes.push(code),
+    api: () => async () => { calls++; throw new TelegramConnectionResetError(); },
+    sleep: async () => {
+      changed = true;
+      if (change === 'revoke' || change === 'generation') await atomicJson(policyPath(ctx.file), { ...ctx.policy,
+        ...(change === 'revoke' ? { enabled: false } : { generation: 'b'.repeat(32) }) });
+      else await stateTransaction(ctx.access, state => {
+        if (change === 'working') state.sessions[TARGET.session].working = true;
+        if (change === 'untracked') state.sessions[TARGET.session].tracked = false;
+        if (change === 'unverified') state.sessions[TARGET.session].unverified = true;
+      });
+    },
+  });
+  assert.equal(binding, null); assert.equal(notification.reply, undefined); assert.equal(calls, 1);
+  assert.equal(codes[0], 'getme-reset-retry');
+});
+test('按钮查询连续两次reset仍失败，不无限重试、不生成假按钮', async t => {
+  const ctx = await temp(t); let calls = 0, waits = 0;
+  const notification = { title: '完成', content: '测试', footer: '', level: 'success' };
+  await assert.rejects(attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, {
+    env: ctx.env, session: async () => TARGET, bridge: async () => true,
+    api: () => async () => { calls++; throw new TelegramConnectionResetError(); }, sleep: async () => { waits++; },
+  }), /getMe.*ECONNRESET/);
+  assert.equal(calls, 2); assert.equal(waits, 1); assert.equal(notification.reply, undefined);
+});
 test('桥接不就绪不展示假按钮；映射落盘失败不重发已发送段', async t => {
   const ctx = await temp(t), msg = { title: '完成', content: '正文', footer: '', level: 'success' };
   assert.equal(await attachReply(msg, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file,

@@ -32,6 +32,18 @@ async function fixture(t) {
   return { root, pack, metadata, repack, run };
 }
 
+test('用户README不混入开发记录，开发指南与版本记录有独立入口', async () => {
+  for (const language of ['', '.en']) {
+    const text = await readFile(new URL(`../README${language}.md`, import.meta.url), 'utf8');
+    assert.doesNotMatch(text, /当前未发布源码|当前源码的通讯层|Current unreleased source|Communication dependency in current source/);
+    assert.doesNotMatch(text, /回归记录|回归共\s*\d+|\d+ tests:|regression totals|## 开发与验证|## Development and verification|v\*.*(?:标签|tag)/i);
+    assert.match(text, /github\.com\/QueCue\/notify-core/);
+    assert.match(text, /CONTRIBUTING(?:\.en)?\.md/);
+    assert.match(text, /CHANGELOG(?:\.en)?\.md/);
+    const guide = await readFile(new URL(`../CONTRIBUTING${language}.md`, import.meta.url), 'utf8');
+    assert.match(guide, /npm ci --ignore-scripts/); assert.match(guide, /npm test/);
+  }
+});
 test('发布校验允许应用运行时、标准通讯依赖与公开文档', async t => {
   const f = await fixture(t);
   assert.deepEqual(await f.run(), { filename: f.pack.filename, integrity: f.pack.integrity });
