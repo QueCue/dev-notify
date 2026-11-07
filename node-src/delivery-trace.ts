@@ -1,15 +1,22 @@
-// 真实 hook 中 Telegram 发送单元的有界阶段取证。只观察，不新增请求、重试或定时器；
+// 真实 hook 中 Telegram 发送单元的有界阶段取证，以及“确认请求未写出”时的受限重连。
 // 不保存收件人、正文、Token、URL、地址、请求头或原始异常，只保存序号、阶段和白名单分类。
+// 唯一新增的请求：本进程观察到建连失败且该请求从未写出请求头／请求体、也未收到响应时，同一单元最多重连 2 次。
 import dc from 'node:diagnostics_channel';
+import { isIP } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { HttpError, TransportError, type Plan } from '@quecue/notify-core';
 import { requestJson } from './channels.js';
 import { TelegramConnectionResetError } from './notification-diagnostics.js';
 
-export type DeliveryStage = 'create' | 'connect' | 'connected' | 'connect-error' | 'headers-sent' | 'body-sent' | 'response' | 'error';
+export type DeliveryStage = 'create' | 'connect' | 'tcp-connected' | 'tls-secure' | 'connected' | 'connect-error'
+  | 'headers-sent' | 'body-sent' | 'response' | 'error';
+/** tcp=TCP 建连失败；read/write=TCP 已建立后在 TLS 阶段读写出错（如收到 RST）；tls-closed=TLS 完成前对端关闭；timeout=建连超时。 */
+export type ConnectFailure = 'tcp' | 'read' | 'write' | 'tls-closed' | 'timeout' | 'other';
 export interface DeliveryAttemptTrace {
-  /** initial=首次；retry=公共库 429 等待后的同内容重发；plain=HTML 解析失败后的纯文本重发。 */
-  kind: 'initial' | 'retry' | 'plain';
+  /** initial=首次；retry=公共库 429 等待后的同内容重发；plain=HTML 解析失败后的纯文本重发；reconnect=确认未写出后的重连。 */
+  kind: 'initial' | 'retry' | 'plain' | 'reconnect';
   atMs: number; elapsedMs: number; stages: DeliveryStage[];
+  tcpMs?: number; connectFailure?: ConnectFailure; attemptedFamilies?: (4 | 6)[];
   socket?: 'new' | 'reused'; socketUses?: number; idleMs?: number; family?: 4 | 6;
   status?: number; apiCode?: number; errorCodes?: string[];
   outcome: 'accepted' | 'rejected' | 'reset' | 'http' | 'network' | 'unknown';
@@ -22,14 +29,16 @@ export interface DeliveryUnitTrace {
 }
 export interface DeliveryTrace { units: DeliveryUnitTrace[]; omitted?: number }
 
-export const MAX_TRACE_UNITS = 8, MAX_TRACE_ATTEMPTS = 4, MAX_TRACE_STAGES = 10;
+export const MAX_TRACE_UNITS = 8, MAX_TRACE_ATTEMPTS = 6, MAX_TRACE_STAGES = 12;
+/** 每单元重连前的等待（毫秒），以及每条通知的重连总数上限。 */
+export const RECONNECT_DELAYS: readonly number[] = [1000, 3000], MAX_RECONNECTS = 4;
 const ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
   'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_BODY_TIMEOUT', 'ABORT_ERR', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
   'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER']);
 const CHANNELS = ['undici:request:create', 'undici:request:bodySent', 'undici:request:headers', 'undici:request:trailers',
   'undici:request:error', 'undici:client:beforeConnect', 'undici:client:connected', 'undici:client:connectError',
-  'undici:client:sendHeaders'] as const;
+  'undici:client:sendHeaders', 'net.client.socket'] as const;
 
 export function safeErrorCodes(error: unknown): string[] {
   const pending: unknown[] = [error], seen = new Set<unknown>(), found = new Set<string>();
@@ -45,9 +54,34 @@ export function safeErrorCodes(error: unknown): string[] {
   return [...found];
 }
 const httpCode = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 100 && (value as number) <= 599 ? value as number : undefined;
-function telegramMethod(request: any): string | undefined {
+const family = (value: unknown) => value === 'IPv4' || value === 4 ? 4 as const : value === 'IPv6' || value === 6 ? 6 as const : undefined;
+export function connectFailure(error: any): ConnectFailure {
   try {
-    if (new URL(String(request?.origin)).hostname !== 'api.telegram.org') return undefined;
+    const items: any[] = Array.isArray(error?.errors) && error.errors.length ? error.errors.slice(0, 8) : [error];
+    const kinds = new Set<ConnectFailure>(items.map((item): ConnectFailure => {
+      if (item?.code === 'UND_ERR_CONNECT_TIMEOUT' || item?.code === 'ETIMEDOUT') return 'timeout';
+      if (item?.syscall === 'connect') return 'tcp';
+      if (item?.syscall === 'read' || item?.syscall === 'write') return item.syscall;
+      if (item?.code === 'ECONNRESET' && /before secure TLS connection was established/.test(String(item?.message))) return 'tls-closed';
+      return 'other';
+    }));
+    return kinds.size === 1 ? [...kinds][0] : 'other';
+  } catch { return 'other'; }
+}
+/** 只把套接字记录的 "地址:端口" 映射为地址族，不保留地址本身。 */
+export function attemptedFamilies(socket: any): (4 | 6)[] | undefined {
+  try {
+    const list = socket?.autoSelectFamilyAttemptedAddresses;
+    if (!Array.isArray(list) || !list.length) return undefined;
+    return list.slice(0, 4).map((value: unknown) => {
+      const text = String(value), host = text.slice(0, text.lastIndexOf(':')).replace(/^\[|\]$/g, '');
+      return isIP(host) === 6 ? 6 : 4;
+    });
+  } catch { return undefined; }
+}
+function telegramMethod(request: any, host = 'api.telegram.org'): string | undefined {
+  try {
+    if (new URL(String(request?.origin)).hostname !== host) return undefined;
     return String(request?.path ?? '').match(/\/(sendMessage|getMe|getWebhookInfo|getUpdates|editMessageReplyMarkup|answerCallbackQuery)(?:\?|$)/)?.[1];
   } catch { return undefined; }
 }
@@ -58,31 +92,74 @@ export interface DeliveryTracer {
   telegram(plan: Plan, request?: typeof requestJson): { request: typeof requestJson; finish(): DeliveryTrace | undefined };
   close(): void;
 }
-export function createDeliveryTracer(now: () => number = () => performance.now(), channel: typeof dc = dc): DeliveryTracer {
+export interface DeliveryTracerOptions {
+  sleep?: (ms: number) => Promise<unknown>;
+  /** 测试可传 [] 关闭重连；生产使用默认值。 */
+  reconnectDelays?: readonly number[];
+  /** 仅测试用：用本地主机替代 api.telegram.org 以驱动真实 undici 事件。 */
+  host?: string;
+}
+export function createDeliveryTracer(now: () => number = () => performance.now(), channel: typeof dc = dc,
+  options: DeliveryTracerOptions = {}): DeliveryTracer {
   const started = now(), sockets = new WeakMap<object, SocketState>(), requests = new WeakMap<object, { attempt?: DeliveryAttemptTrace; socket?: SocketState }>();
-  let current: DeliveryAttemptTrace | undefined, closed = false;
+  const sleep = options.sleep ?? delay, delays = options.reconnectDelays ?? RECONNECT_DELAYS, host = options.host ?? 'api.telegram.org';
+  // 重连判定只依赖这些内部标记，不依赖有上限的阶段数组。
+  const created = new WeakSet<object>(), connectFailed = new WeakSet<object>(), written = new WeakSet<object>();
+  const begins = new WeakMap<object, number>(), netSockets = new WeakMap<object, object>();
+  let current: DeliveryAttemptTrace | undefined, connecting: DeliveryAttemptTrace | undefined, closed = false, reconnects = 0;
   const elapsed = () => Math.max(0, Math.round(now() - started));
   const stage = (attempt: DeliveryAttemptTrace | undefined, value: DeliveryStage) => {
     if (attempt && attempt.stages.length < MAX_TRACE_STAGES && attempt.stages.at(-1) !== value) attempt.stages.push(value);
   };
+  const addCodes = (attempt: DeliveryAttemptTrace, error: unknown) => {
+    attempt.errorCodes = [...new Set([...(attempt.errorCodes ?? []), ...safeErrorCodes(error)])].slice(0, 3);
+  };
   const handlers: Record<string, (event: any) => void> = {
     'undici:request:create': event => {
-      if (!telegramMethod(event?.request)) return;
+      if (!telegramMethod(event?.request, host)) return;
       // 发送窗口外（如身份查询）的请求只用于跟踪连接复用，不归入发送单元。
-      const attempt = current && telegramMethod(event.request) === 'sendMessage' ? current : undefined;
+      const attempt = current && telegramMethod(event.request, host) === 'sendMessage' ? current : undefined;
       requests.set(event.request, { attempt });
+      if (attempt) created.add(attempt);
       stage(attempt, 'create');
     },
-    'undici:client:beforeConnect': event => { if (event?.connectParams?.hostname === 'api.telegram.org') stage(current, 'connect'); },
+    'undici:client:beforeConnect': event => {
+      if (event?.connectParams?.hostname !== host) return;
+      stage(current, 'connect');
+      connecting = current;
+    },
+    // undici 建连时同步创建的套接字；只绑定紧随 Telegram beforeConnect 的那一个，仅监听 connect/secureConnect。
+    'net.client.socket': event => {
+      const attempt = connecting, socket = event?.socket;
+      connecting = undefined;
+      if (!attempt || !socket || typeof socket.once !== 'function') return;
+      netSockets.set(attempt, socket);
+      socket.once('connect', () => {
+        try {
+          if (closed) return;
+          stage(attempt, 'tcp-connected');
+          attempt.tcpMs = Math.max(0, Math.round(now() - (begins.get(attempt) ?? now())));
+          const value = family(socket.remoteFamily);
+          if (value) attempt.family = value;
+        } catch { /* 忽略观察异常 */ }
+      });
+      socket.once('secureConnect', () => { try { if (!closed) stage(attempt, 'tls-secure'); } catch { /* 忽略 */ } });
+    },
     'undici:client:connected': event => {
-      if (event?.connectParams?.hostname !== 'api.telegram.org' || !event.socket || typeof event.socket !== 'object') return;
+      if (event?.connectParams?.hostname !== host || !event.socket || typeof event.socket !== 'object') return;
       sockets.set(event.socket, { uses: 0, creator: current });
       stage(current, 'connected');
     },
     'undici:client:connectError': event => {
-      if (event?.connectParams?.hostname !== 'api.telegram.org') return;
+      if (event?.connectParams?.hostname !== host) return;
+      connecting = undefined;
       stage(current, 'connect-error');
-      if (current) current.errorCodes = [...new Set([...(current.errorCodes ?? []), ...safeErrorCodes(event.error)])].slice(0, 3);
+      if (!current) return;
+      connectFailed.add(current);
+      current.connectFailure = connectFailure(event.error);
+      const families = attemptedFamilies(netSockets.get(current));
+      if (families) current.attemptedFamilies = families;
+      addCodes(current, event.error);
     },
     'undici:client:sendHeaders': event => {
       const record = event?.request && requests.get(event.request);
@@ -93,23 +170,29 @@ export function createDeliveryTracer(now: () => number = () => performance.now()
       if (!socket) { socket = { uses: 0 }; sockets.set(event.socket, socket); }
       const attempt = record.attempt;
       if (attempt) {
+        written.add(attempt);
         attempt.socket = known && socket.uses === 0 && socket.creator === attempt ? 'new' : 'reused';
         if (attempt.socket === 'reused' && known) {
           attempt.socketUses = socket.uses;
           if (socket.doneAt !== undefined) attempt.idleMs = Math.max(0, Math.round(now() - socket.doneAt));
         }
-        const family = event.socket.remoteFamily;
-        if (family === 'IPv4' || family === 'IPv6') attempt.family = family === 'IPv4' ? 4 : 6;
+        const value = family(event.socket.remoteFamily);
+        if (value) attempt.family = value;
         stage(attempt, 'headers-sent');
       }
       socket.uses++;
       record.socket = socket;
     },
-    'undici:request:bodySent': event => stage(event?.request && requests.get(event.request)?.attempt, 'body-sent'),
+    'undici:request:bodySent': event => {
+      const attempt = event?.request && requests.get(event.request)?.attempt;
+      if (attempt) written.add(attempt);
+      stage(attempt, 'body-sent');
+    },
     'undici:request:headers': event => {
       const record = event?.request && requests.get(event.request);
       if (!record) return;
       if (record.socket) record.socket.doneAt = now();
+      if (record.attempt) written.add(record.attempt);
       stage(record.attempt, 'response');
       const status = httpCode(event.response?.statusCode);
       if (record.attempt && status) record.attempt.status = status;
@@ -123,7 +206,7 @@ export function createDeliveryTracer(now: () => number = () => performance.now()
       if (!record) return;
       if (record.socket) record.socket.doneAt = now();
       stage(record.attempt, 'error');
-      if (record.attempt) record.attempt.errorCodes = [...new Set([...(record.attempt.errorCodes ?? []), ...safeErrorCodes(event.error)])].slice(0, 3);
+      if (record.attempt) addCodes(record.attempt, event.error);
     },
   };
   // 观察器自身异常一律吞掉，绝不影响通知发送。
@@ -149,40 +232,49 @@ export function createDeliveryTracer(now: () => number = () => performance.now()
             && (payload?.text === (item.payload as any)?.text || payload?.text === item.plain));
         } catch { return -1; }
       };
+      // 仅当本进程确认该请求已创建、建连失败、且从未写出请求或收到响应时才可重连。
+      const unsent = (attempt: DeliveryAttemptTrace, error: unknown) => error instanceof TransportError && !(error instanceof HttpError)
+        && created.has(attempt) && connectFailed.has(attempt) && !written.has(attempt) && attempt.socket === undefined;
       const traced: typeof requestJson = async (url, payload, fetcher) => {
         const index = find(payload), unit = units[index];
-        let attempt: DeliveryAttemptTrace | undefined;
-        if (unit && index < MAX_TRACE_UNITS && unit.attempts.length < MAX_TRACE_ATTEMPTS) {
-          const plain = (plan.items[index].payload as any)?.parse_mode !== undefined && (payload as any)?.parse_mode === undefined;
-          // 同类内容再次请求只可能来自公共库的 429 等待重发。
-          const kind = plain ? (unit.attempts.some(value => value.kind === 'plain') ? 'retry' : 'plain')
-            : unit.attempts.length ? 'retry' : 'initial';
-          attempt = { kind, atMs: elapsed(), elapsedMs: 0, stages: [], outcome: 'unknown' };
-          unit.attempts.push(attempt);
-          observed = true;
-        }
-        const previous = current;
-        current = attempt;
-        const begin = now();
-        try {
-          const response = await request(url, payload, fetcher);
-          if (attempt) {
-            const ok = (response as any)?.ok === true;
-            attempt.outcome = ok ? 'accepted' : 'rejected';
-            const code = httpCode((response as any)?.error_code);
-            if (!ok && code) attempt.apiCode = code;
+        for (let retries = 0; ; retries++) {
+          let attempt: DeliveryAttemptTrace | undefined;
+          if (unit && index < MAX_TRACE_UNITS && unit.attempts.length < MAX_TRACE_ATTEMPTS) {
+            const plain = (plan.items[index].payload as any)?.parse_mode !== undefined && (payload as any)?.parse_mode === undefined;
+            // 同一单元同类内容再次进入只可能来自公共库的 429 等待重发。
+            const kind = retries ? 'reconnect' : plain ? (unit.attempts.some(value => value.kind === 'plain') ? 'retry' : 'plain')
+              : unit.attempts.length ? 'retry' : 'initial';
+            attempt = { kind, atMs: elapsed(), elapsedMs: 0, stages: [], outcome: 'unknown' };
+            unit.attempts.push(attempt);
+            observed = true;
           }
-          return response;
-        } catch (error) {
-          if (attempt) {
-            attempt.outcome = error instanceof TelegramConnectionResetError ? 'reset' : error instanceof HttpError ? 'http'
-              : error instanceof TransportError ? 'network' : 'unknown';
-            if (error instanceof HttpError && httpCode(error.status)) attempt.status = error.status;
+          const previous = current;
+          current = attempt;
+          const begin = now();
+          if (attempt) begins.set(attempt, begin);
+          try {
+            const response = await request(url, payload, fetcher);
+            if (attempt) {
+              const ok = (response as any)?.ok === true;
+              attempt.outcome = ok ? 'accepted' : 'rejected';
+              const code = httpCode((response as any)?.error_code);
+              if (!ok && code) attempt.apiCode = code;
+            }
+            return response;
+          } catch (error) {
+            if (attempt) {
+              attempt.outcome = error instanceof TelegramConnectionResetError ? 'reset' : error instanceof HttpError ? 'http'
+                : error instanceof TransportError ? 'network' : 'unknown';
+              if (error instanceof HttpError && httpCode(error.status)) attempt.status = error.status;
+            }
+            if (!attempt || closed || retries >= delays.length || reconnects >= MAX_RECONNECTS || !unsent(attempt, error)) throw error;
+          } finally {
+            if (attempt) attempt.elapsedMs = Math.max(0, Math.round(now() - begin));
+            current = previous;
+            connecting = undefined;
           }
-          throw error;
-        } finally {
-          if (attempt) attempt.elapsedMs = Math.max(0, Math.round(now() - begin));
-          current = previous;
+          reconnects++;
+          await sleep(delays[retries]);
         }
       };
       return {

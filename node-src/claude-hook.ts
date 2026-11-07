@@ -8,7 +8,7 @@ import { shouldNotify, type NotifyEvent } from './notifications.js';
 import { transcriptEndTime } from './hook-time.js';
 import { findSessionName } from './reply-platform.js';
 import { ReplyPreparationError, safeDeliveryReason, safeFailureReason, saveNotificationDiagnostic, type NotificationDiagnostic, type ReplyDiagnosticCode } from './notification-diagnostics.js';
-import { createDeliveryTracer, type DeliveryTrace } from './delivery-trace.js';
+import { createDeliveryTracer, type DeliveryTrace, type DeliveryTracerOptions } from './delivery-trace.js';
 import { lifecycleHook, interactionHook, attachReply, mapReplies, notificationCoverage, type ReplyHookOptions } from './reply-hooks.js';
 
 export const MAX_HOOK_BYTES = 8 * 1024 * 1024;
@@ -88,6 +88,8 @@ export interface HookContext {
   reply?: ReplyHookOptions;
   /** 测试注入时钟；默认使用当前本地时间。 */
   now?: () => Date;
+  /** 测试注入重连等待；生产使用默认值。 */
+  deliveryTrace?: DeliveryTracerOptions;
 }
 export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, context: HookContext): Promise<void> {
   const message = claudeHookMessage(bytes);
@@ -128,8 +130,9 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
     notification.footer = renderFooter(config.templates.footer, data, sessionName, time);
   }
   // 从身份查询前开始观察，才能判断发送是否复用了此前建立的连接；只在本函数内有效。
+  // 仅当观察确认 Telegram 请求建连失败且从未写出时，才允许受限重连（见 delivery-trace.ts）。
   let channels = 0;
-  const tracer = createDeliveryTracer();
+  const tracer = createDeliveryTracer(undefined, undefined, context.deliveryTrace);
   try {
     let binding = null;
     try { binding = await attachReply(notification, data, configFile, options); }

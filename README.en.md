@@ -213,7 +213,7 @@ Failures labeled as retained by `reply status` are not new failure events. If th
 - **Only one channel received a notification:** check that notification's channel error. Channels deliver independently; recovery does not automatically replay failed messages.
 - **Unavailable entry after an update:** check `dev-notify --version` and the active Node environment, then reinstall hooks. Existing hook entries alone do not prove usability.
 - **Permission or lock error:** check directory ownership, access rights, and running processes. Do not indiscriminately delete locks or rerun with sudo/administrator rights.
-- **Network error:** retain the safe error and its timestamp. A limited read-only identity-query retry does not mean message sending is retried automatically.
+- **Network error:** retain the safe error and its timestamp. Completion-notification Telegram sends reconnect a limited number of times only when the request is confirmed not yet written (connection setup failed); once a request is written or its outcome is unknown, it is not resent.
 
 Local diagnostics are under `<configuration file>.reply-data/`: `notification-diagnostics/` stores recent notification summaries, `notification-failures/` the latest failure per session, and `bridge-failures/` the latest parent/worker failure. Recovery does not erase retained failures, so compare timestamps. Files contain no message bodies, credentials, or recipients and are not used for replay. They do not expire automatically; clear them with reply state after disabling and confirming cleanup. Review files before sharing, and do not share full configuration, credentials, or session state.
 
@@ -230,7 +230,7 @@ Run the preceding cleanup steps only for enabled features you intend to remove. 
 
 ## Formatting and exit codes
 
-Supports common Markdown, code blocks, lists, and tables, with automatic splitting of long messages. Complex Markdown may not render exactly as written. Failure for one recipient stops their remaining segments while other recipients are still attempted. Explicit formatting rejection or rate limiting may trigger bounded fallback; unknown network outcomes are not blindly resent, and exactly-once delivery is not guaranteed.
+Supports common Markdown, code blocks, lists, and tables, with automatic splitting of long messages. Complex Markdown may not render exactly as written. Failure for one recipient stops their remaining segments while other recipients are still attempted. Explicit formatting rejection or rate limiting may trigger bounded fallback; completion notifications reconnect a limited number of times when a request is confirmed unwritten, unknown network outcomes are not blindly resent, and exactly-once delivery is not guaranteed.
 
 | Code | Meaning |
 | --- | --- |
