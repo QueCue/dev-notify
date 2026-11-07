@@ -2,6 +2,15 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.8-beta.2 — 2026-11-08
+
+Based on the `0.2.8-beta.1` macOS result (send reconnects worked, but the single read-only query retry was still insufficient), this widens the read-only query retry allowance. It updates only npm `beta`; the stable `latest` remains 0.2.7.
+
+- Bridge initialization `getWebhookInfo`/`getMe` retries each query at most 2 times on confirmed connection reset (about 1 s, then 3 s), with at most 3 in total for one start (previously one shared retry after 500 ms). Authorization, stop requests, and heartbeat are rechecked after every wait; the worst-case extra wait is about 5 s, still within the parent's 15 s readiness wait.
+- The notification-button `getMe` retries at most 2 times on confirmed connection reset (about 1 s, then 3 s; previously once after 500 ms), revalidating after every wait; only when every attempt resets is the bridge-verified identity used as a fallback. The maximum `identityRetries` becomes 2 accordingly.
+- Send reconnects, no retry for 401 or other network errors, and never resending written requests are unchanged; the reset source is still undetermined. The wait schedule shares one constant with send reconnects.
+- Full Windows x64 / Node 24.12.0 regression: 387 tests, 386 passed, 0 failed, 1 explicit native-credential test skipped. Updated and new tests cover recovery after two resets, exit after three resets of one query, the 3-retry total across both queries, no request after a stop/revoke before the second retry, button lookup fallback or failure after three resets, and authorization/session changes after the last reset blocking the fallback. Not yet accepted on a Mac.
+
 ## 0.2.8-beta.1 — 2026-11-07
 
 A bounded fix and finer diagnostics based on the `0.2.8-beta.0` macOS evidence (both send units reset during connection setup and neither request was written). It updates only npm `beta`; the stable `latest` remains 0.2.7.
@@ -10,6 +19,7 @@ A bounded fix and finer diagnostics based on the `0.2.8-beta.0` macOS evidence (
 - Connection setup diagnostics are finer: `tcp-connected` and `tls-secure` stages; `connectFailure` (`tcp` TCP connect failure / `read`, `write` read or write error during TLS after TCP was established / `tls-closed` peer closed before TLS completed / `timeout` / `other`); `tcpMs`; `family` for failed or successful connections; and the attempted address-family sequence `attemptedFamilies` (4/6 only, no addresses). A new attempt kind `reconnect` is added; up to 6 attempts per unit and 12 stages per attempt are recorded.
 - This mitigates confirmed unwritten failures; it does not identify the reset source. The new fields let the next Mac capture show whether resets happen during TLS and on which address family.
 - Full regression on Windows x64 / Node 24.12.0: 384 tests, 383 passed, 0 failed, 1 explicit native-credential test skipped. New tests cover successful reconnects, exhausted allowances, every never-reconnect case, classification and family mapping, real undici loopback (reconnect succeeds after TCP refusal; a TLS-stage RST is classified as `read`), and a real Stop hook delivering after reconnecting. Not yet accepted on a Mac.
+- macOS field result (16:12:53 UTC): the user confirmed Telegram and Feishu both delivered with buttons; summary `attached`, `identityRetries: 1`, `identityFallback: "bridge"`, Telegram 2/2. Unit 1's first attempt established IPv4 TCP in 385 ms and then received an RST during TLS (`connectFailure: read`) without writing the request; about 1 s later a `reconnect` on a new connection completed TLS and was confirmed with HTTP 200. Unit 2 reused that connection (idle 27 ms) and succeeded first time. This confirms the bounded reconnect works in the field and that the failed connection was IPv4, so this run does not support the IPv6 hypothesis. In the same round, bridge initialization `getWebhookInfo` during `update --yes` still failed after its existing single retry (`DN-BRIDGE-CONNECTION-RESET` / `DN-MAINTENANCE-INCOMPLETE`), and the button identity query reset twice before using the bridge fallback; the read-only query retry allowance is still insufficient, and the reset source is undetermined.
 
 ## 0.2.8-beta.0 — 2026-11-07
 

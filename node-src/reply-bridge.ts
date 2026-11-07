@@ -11,7 +11,9 @@ import { telegramApi, type TelegramApi } from './reply-telegram.js';
 import { acquireBotLock, processState } from './reply-lock.js';
 import { drainReplies, processUpdate } from './reply-engine.js';
 import { drainInteractionFeedback } from './reply-outcomes.js';
-import { saveBridgeFailure, safeFailureReason, TelegramConnectionResetError, isBridgeDiagnosticStage, type BridgeDiagnosticStage } from './notification-diagnostics.js';
+import { CONNECTION_RESET_RETRY_DELAYS, saveBridgeFailure, safeFailureReason, TelegramConnectionResetError, isBridgeDiagnosticStage, type BridgeDiagnosticStage } from './notification-diagnostics.js';
+/** 两种初始化查询合计的 reset 重试上限。 */
+export const INIT_RESET_RETRIES = 3;
 import { UI_ERROR_CODES, isBridgeFailureKey, type BridgeFailureKey } from './error-codes.js';
 
 export interface BridgeProblem { key: BridgeFailureKey; stage: BridgeDiagnosticStage }
@@ -202,19 +204,22 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
     }, heartbeatMs);
     heartbeat.unref();
     let api = (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
-    let retriedInitialization = false;
+    let initializationRetries = 0;
     const initialize = async (method: 'getWebhookInfo' | 'getMe'): Promise<any> => {
-      try { return await api(method, {}); }
-      catch (error) {
-        // 仅本次初始化共用一次重试额度，不重发通知、不重新消费更新或提交输入。
-        if (!(error instanceof TelegramConnectionResetError) || retriedInitialization) throw error;
-        retriedInitialization = true;
-        await recordFailure(file, 'worker', attempt, error);
-        log(t('reply.initConnectionReset'));
-        await (options.sleep ?? delay)(500);
-        const after = await fresh();
-        if (!after || after.identity !== access.identity || await isStopped() || heartbeatFailed) throw error;
-        return await api(method, {});
+      for (let retry = 0; ; retry++) {
+        try { return await api(method, {}); }
+        catch (error) {
+          // 只读初始化查询：明确 reset 时每个方法最多 2 次、两方法合计最多 3 次延迟重试（最坏耗时仍在父进程 15 秒等待内）；
+          // 不重发通知、不重新消费更新或提交输入。
+          if (!(error instanceof TelegramConnectionResetError) || retry >= CONNECTION_RESET_RETRY_DELAYS.length
+            || initializationRetries >= INIT_RESET_RETRIES) throw error;
+          initializationRetries++;
+          await recordFailure(file, 'worker', attempt, error);
+          log(t('reply.initConnectionReset'));
+          await (options.sleep ?? delay)(CONNECTION_RESET_RETRY_DELAYS[retry]);
+          const after = await fresh();
+          if (!after || after.identity !== access.identity || await isStopped() || heartbeatFailed) throw error;
+        }
       }
     };
     attempt.stage = 'getWebhookInfo';

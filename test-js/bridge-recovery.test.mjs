@@ -277,7 +277,7 @@ for (const method of ['getWebhookInfo', 'getMe']) test(`初始化${method}连接
     api: () => async name => { calls.push(name); if (name === method && resets++ === 0) throw new TelegramConnectionResetError(); return {}; },
   });
   assert.equal(calls.filter(name => name === method).length, 2);
-  assert.deepEqual(waits, [500]); assert.equal(logs.length, 1); assert.match(logs[0], /ECONNRESET/);
+  assert.deepEqual(waits, [1000]); assert.equal(logs.length, 1); assert.match(logs[0], /ECONNRESET/);
   const failure = JSON.parse(await readFile(path.join(replyDirectory(f.file), 'bridge-failures', 'worker.json'), 'utf8'));
   assert.equal(failure.stage, method); assert.match(failure.reason, /ECONNRESET/);
   await assert.rejects(readFile(f.lease), { code: 'ENOENT' }); // 正常退出；留存失败并不代表当前仍故障。
@@ -291,28 +291,48 @@ test('默认API通过真实传输适配器识别底层reset并恢复初始化', 
   };
   try {
     await runBridge(f.file, { env: f.env, maxIterations: 0, sleep: async ms => waits.push(ms) });
-    assert.deepEqual(calls, ['getWebhookInfo', 'getWebhookInfo', 'getMe']); assert.deepEqual(waits, [500]);
+    assert.deepEqual(calls, ['getWebhookInfo', 'getWebhookInfo', 'getMe']); assert.deepEqual(waits, [1000]);
     const text = await readFile(path.join(replyDirectory(f.file), 'bridge-failures', 'worker.json'), 'utf8');
     assert.match(text, /ECONNRESET/); assert.doesNotMatch(text, /PRIVATE|FAKE_ONLY/);
   } finally { globalThis.fetch = previous; }
 });
-test('连续两次reset退出，不无限重试', async t => {
-  const f = await fixture(t); let calls = 0, waits = 0;
-  await assert.rejects(runBridge(f.file, { env: f.env, maxIterations: 0, sleep: async () => { waits++; },
+test('初始化同一查询连续reset两次后恢复，等待约1s、3s', async t => {
+  const f = await fixture(t), calls = [], waits = []; let resets = 0;
+  await runBridge(f.file, { env: f.env, maxIterations: 0, sleep: async ms => { waits.push(ms); },
+    api: () => async name => { calls.push(name); if (name === 'getWebhookInfo' && resets++ < 2) throw new TelegramConnectionResetError(); return {}; },
+  });
+  assert.deepEqual(calls, ['getWebhookInfo', 'getWebhookInfo', 'getWebhookInfo', 'getMe']); assert.deepEqual(waits, [1000, 3000]);
+});
+test('同一查询连续三次reset退出，不无限重试', async t => {
+  const f = await fixture(t), waits = []; let calls = 0;
+  await assert.rejects(runBridge(f.file, { env: f.env, maxIterations: 0, sleep: async ms => { waits.push(ms); },
     api: () => async () => { calls++; throw new TelegramConnectionResetError(); },
   }), TelegramConnectionResetError);
-  assert.equal(calls, 2); assert.equal(waits, 1);
+  assert.equal(calls, 3); assert.deepEqual(waits, [1000, 3000]);
 });
-test('两种初始化查询共用一次重试额度', async t => {
-  const f = await fixture(t), calls = []; let waits = 0, first = true;
-  await assert.rejects(runBridge(f.file, { env: f.env, maxIterations: 0, sleep: async () => { waits++; },
+test('两种初始化查询合计最多重试3次', async t => {
+  const f = await fixture(t), calls = [], waits = []; let webhookResets = 0;
+  await assert.rejects(runBridge(f.file, { env: f.env, maxIterations: 0, sleep: async ms => { waits.push(ms); },
     api: () => async method => {
       calls.push(method);
-      if (method === 'getMe' || first) { first = false; throw new TelegramConnectionResetError(); }
+      if (method === 'getMe' || webhookResets++ < 2) throw new TelegramConnectionResetError();
       return {};
     },
   }), TelegramConnectionResetError);
-  assert.deepEqual(calls, ['getWebhookInfo', 'getWebhookInfo', 'getMe']); assert.equal(waits, 1);
+  assert.deepEqual(calls, ['getWebhookInfo', 'getWebhookInfo', 'getWebhookInfo', 'getMe', 'getMe']);
+  assert.deepEqual(waits, [1000, 3000, 1000]);
+});
+for (const stop of ['requested', 'revoked']) test(`初始化第二次重试前${stop}时不再发请求`, async t => {
+  const f = await fixture(t); let calls = 0, sleeps = 0, stopped = false;
+  await assert.rejects(runBridge(f.file, { env: f.env, maxIterations: 0, stopped: () => stopped,
+    sleep: async () => {
+      if (++sleeps < 2) return;
+      if (stop === 'requested') stopped = true;
+      else { const policy = JSON.parse(await readFile(policyPath(f.file), 'utf8')); await atomicJson(policyPath(f.file), { ...policy, enabled: false }); }
+    },
+    api: () => async () => { calls++; throw new TelegramConnectionResetError(); },
+  }), TelegramConnectionResetError);
+  assert.equal(calls, 2); assert.equal(sleeps, 2);
 });
 for (const kind of ['network', '401', '409']) test(`初始化${kind}错误不使用reset重试规则`, async t => {
   const f = await fixture(t); let calls = 0;

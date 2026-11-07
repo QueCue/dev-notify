@@ -66,6 +66,8 @@ export function connectionReset(error: unknown): boolean {
   }
   return false;
 }
+/** 明确连接重置后的等待（毫秒）：发送确认未写出时的重连与只读查询重试共用，每次最多 2 次。 */
+export const CONNECTION_RESET_RETRY_DELAYS: readonly number[] = [1000, 3000];
 export class TelegramConnectionResetError extends TransportError {
   constructor() { super(t('diagnostic.connectionReset')); }
 }

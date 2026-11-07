@@ -776,7 +776,7 @@ test('首次通知getMe连接重置后只读重试恢复，第二次通知正常
       assert.equal(diagnostic.channels.telegram.status, 'complete'); assert.equal(diagnostic.channels.feishu.status, 'complete');
     }
     assert.deepEqual(requests, ['getMe', 'getMe', 'sendMessage', 'feishu', 'getMe', 'sendMessage', 'feishu']);
-    assert.deepEqual(waits, [500]);
+    assert.deepEqual(waits, [1000]);
   } finally { globalThis.fetch = previous; }
 });
 test('首次通知持续reset时保留精确发送原因，下一次正常；不自动重发通知', async t => {
@@ -804,12 +804,12 @@ test('首次通知持续reset时保留精确发送原因，下一次正常；不
       if (turn === 1) assert.match(d.channels.telegram.reason, /ECONNRESET/);
       assert.doesNotMatch(text, /PRIVATE|FAKE_BODY|FAKE_ONLY/);
     }
-    assert.equal(getMe, 3); assert.equal(sends, 2); // 两轮各只尝试发送一次，不自动重发。
+    assert.equal(getMe, 4); assert.equal(sends, 2); // 首轮 getMe 重试 2 次；两轮各只尝试发送一次，不自动重发。
     const failure = JSON.parse(await readFile(path.join(replyDirectory(ctx.file), 'notification-failures', TARGET.session + '.json'), 'utf8'));
-    assert.equal(failure.reply, 'getme-failed'); assert.equal(failure.identityRetries, 1);
+    assert.equal(failure.reply, 'getme-failed'); assert.equal(failure.identityRetries, 2);
   } finally { globalThis.fetch = previous; }
 });
-for (const resetSend of [false, true]) test(`真实桥接初始化身份可兜底首次getMe两次reset，发送${resetSend ? '失败也不重发' : '成功带双渠道按钮'}`, async t => {
+for (const resetSend of [false, true]) test(`真实桥接初始化身份可兜底首次getMe三次reset，发送${resetSend ? '失败也不重发' : '成功带双渠道按钮'}`, async t => {
   const ctx = await temp(t), previous = globalThis.fetch, methods = [], buttons = [];
   await atomicJson(ctx.file, { ...CONFIG, telegram: { enabled: true, chat_ids: ['111'] }, feishu: { enabled: true } });
   const env = { ...ctx.env, FEISHU_WEBHOOK: 'https://open.feishu.cn/open-apis/bot/v2/hook/FAKE_ONLY' };
@@ -830,11 +830,11 @@ for (const resetSend of [false, true]) test(`真实桥接初始化身份可兜�
       });
       return [];
     } });
-    assert.deepEqual(methods, ['getMe', 'getMe', 'sendMessage', 'feishu']);
+    assert.deepEqual(methods, ['getMe', 'getMe', 'getMe', 'sendMessage', 'feishu']);
     assert.deepEqual(buttons, resetSend ? [true] : [true, true]);
     const text = await readFile(path.join(replyDirectory(ctx.file), 'notification-diagnostics', TARGET.session + '.json'), 'utf8');
     const d = JSON.parse(text);
-    assert.equal(d.reply, 'attached'); assert.equal(d.identityRetries, 1); assert.equal(d.identityFallback, 'bridge');
+    assert.equal(d.reply, 'attached'); assert.equal(d.identityRetries, 2); assert.equal(d.identityFallback, 'bridge');
     assert.equal(d.channels.telegram.status, resetSend ? 'incomplete' : 'complete');
     assert.equal(d.channels.feishu.status, 'complete');
     if (resetSend) assert.match(d.channels.telegram.reason, /ECONNRESET/);
@@ -877,14 +877,14 @@ test('新getMe结果优先于桥接缓存，并在请求期间目标变化时拒
   }
 });
 for (const change of ['revoke', 'generation', 'users', 'permissions', 'identity', 'working', 'untracked', 'unverified', 'ended', 'bridge'])
-test(`第二次getMe reset之后的${change}变化阻止身份兜底`, async t => {
+test(`最后一次getMe reset之后的${change}变化阻止身份兜底`, async t => {
   const ctx = await temp(t); await identityLease(ctx);
   let calls = 0, changed = false; const codes = [], notification = { title: '完成', content: '', footer: '', level: 'success' };
   const result = await attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, {
     env: ctx.env, session: async () => changed && change === 'identity' ? { ...TARGET, birth: 'NEW' } : TARGET,
     sleep: async () => {}, replyDiagnostic: code => codes.push(code),
     api: () => async () => {
-      if (++calls === 2) {
+      if (++calls === 3) {
         changed = true;
         if (['revoke', 'generation', 'users', 'permissions'].includes(change)) await atomicJson(policyPath(ctx.file), { ...ctx.policy,
           ...(change === 'revoke' ? { enabled: false } : change === 'generation' ? { generation: 'c'.repeat(32) }
@@ -900,7 +900,7 @@ test(`第二次getMe reset之后的${change}变化阻止身份兜底`, async t =
       throw new TelegramConnectionResetError();
     },
   });
-  assert.equal(result, null); assert.equal(notification.reply, undefined); assert.equal(calls, 2);
+  assert.equal(result, null); assert.equal(notification.reply, undefined); assert.equal(calls, 3);
   assert.ok(!codes.includes('getme-bridge-fallback'));
 });
 for (const fallback of [false, true]) test(`token提交事务阻止最后桥接检查期间的新本地输入，身份${fallback ? '兜底' : '直查'}`, async t => {
@@ -909,12 +909,12 @@ for (const fallback of [false, true]) test(`token提交事务阻止最后桥接�
   const result = await attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, {
     env: ctx.env, session: async () => TARGET, sleep: async () => {}, replyDiagnostic: code => codes.push(code),
     bridge: async () => {
-      if (++checks === (fallback ? 4 : 2)) await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
+      if (++checks === (fallback ? 5 : 2)) await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
       return true;
     },
     api: () => async () => { calls++; if (fallback) throw new TelegramConnectionResetError(); return { username: 'FreshTestBot' }; },
   });
-  assert.equal(result, null); assert.equal(notification.reply, undefined); assert.equal(calls, fallback ? 2 : 1);
+  assert.equal(result, null); assert.equal(notification.reply, undefined); assert.equal(calls, fallback ? 3 : 1);
   assert.ok(!codes.includes('getme-bridge-fallback'));
   assert.equal(Object.keys((await snapshot(ctx.access)).entries).filter(key => key.startsWith('token:')).length, 0);
 });
@@ -924,23 +924,23 @@ test('最终reset后更换Token时不使用旧桥接身份', async t => {
   await assert.rejects(attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, {
     env: ctx.env, session: async () => TARGET, sleep: async () => {}, replyDiagnostic: code => codes.push(code),
     api: () => async () => {
-      if (++calls === 2) ctx.env.TELEGRAM_BOT_TOKEN = '124:FAKE_OTHER';
+      if (++calls === 3) ctx.env.TELEGRAM_BOT_TOKEN = '124:FAKE_OTHER';
       throw new TelegramConnectionResetError();
     },
   }));
-  assert.equal(calls, 2); assert.equal(notification.reply, undefined); assert.ok(!codes.includes('getme-bridge-fallback'));
+  assert.equal(calls, 3); assert.equal(notification.reply, undefined); assert.ok(!codes.includes('getme-bridge-fallback'));
 });
 test('身份兜底前本地核验异常保持check-failed，不误标为getMe reset失败', async t => {
   const ctx = await temp(t); await identityLease(ctx); let calls = 0;
   await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Stop', session_id: TARGET.session })), ctx.file, {
     env: ctx.env, err: () => {}, send: async plan => ({ channel: plan.channel, ok: true, sent: plan.items.length, planned: plan.items.length }),
     reply: { session: async () => TARGET, sleep: async () => {}, api: () => async () => {
-      if (++calls === 2) await writeFile(path.join(replyDirectory(ctx.file), 'stop.json'), 'invalid-json');
+      if (++calls === 3) await writeFile(path.join(replyDirectory(ctx.file), 'stop.json'), 'invalid-json');
       throw new TelegramConnectionResetError();
     } },
   });
   const d = JSON.parse(await readFile(path.join(replyDirectory(ctx.file), 'notification-diagnostics', TARGET.session + '.json'), 'utf8'));
-  assert.equal(d.reply, 'check-failed'); assert.equal(d.identityFallback, undefined); assert.equal(calls, 2);
+  assert.equal(d.reply, 'check-failed'); assert.equal(d.identityFallback, undefined); assert.equal(calls, 3);
 });
 
 for (const change of ['revoke', 'generation', 'identity', 'working', 'untracked', 'unverified', 'bridge'])
@@ -965,14 +965,14 @@ test(`按钮查询重试前重新核验：${change}`, async t => {
   assert.equal(binding, null); assert.equal(notification.reply, undefined); assert.equal(calls, 1);
   assert.equal(codes[0], 'getme-reset-retry');
 });
-test('按钮查询连续两次reset仍失败，不无限重试、不生成假按钮', async t => {
-  const ctx = await temp(t); let calls = 0, waits = 0;
+test('按钮查询连续三次reset仍失败，不无限重试、不生成假按钮', async t => {
+  const ctx = await temp(t), waits = []; let calls = 0;
   const notification = { title: '完成', content: '测试', footer: '', level: 'success' };
   await assert.rejects(attachReply(notification, { hook_event_name: 'Stop', session_id: TARGET.session }, ctx.file, {
     env: ctx.env, session: async () => TARGET, bridge: async () => true,
-    api: () => async () => { calls++; throw new TelegramConnectionResetError(); }, sleep: async () => { waits++; },
+    api: () => async () => { calls++; throw new TelegramConnectionResetError(); }, sleep: async ms => { waits.push(ms); },
   }), /getMe.*ECONNRESET/);
-  assert.equal(calls, 2); assert.equal(waits, 1); assert.equal(notification.reply, undefined);
+  assert.equal(calls, 3); assert.deepEqual(waits, [1000, 3000]); assert.equal(notification.reply, undefined);
 });
 test('桥接不就绪不展示假按钮；映射落盘失败不重发已发送段', async t => {
   const ctx = await temp(t), msg = { title: '完成', content: '正文', footer: '', level: 'success' };

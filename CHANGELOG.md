@@ -2,6 +2,15 @@
 
 简体中文 | [English](CHANGELOG.en.md)
 
+## 0.2.8-beta.2 — 2026-11-08
+
+依据 `0.2.8-beta.1` 的 macOS 结果（发送重连生效，但只读查询的单次重试仍不够）扩大只读查询的重试额度；仅更新 npm `beta`，正式版 `latest` 仍为 0.2.7。
+
+- 桥接初始化的 `getWebhookInfo`／`getMe` 遇到明确连接重置时，每个查询最多重试 2 次（约 1s、3s），本次启动两者合计最多 3 次（原为共享 1 次、500ms）；每次等待后重新核验授权、停止请求与心跳，最坏额外等待约 5s，仍在父进程 15s 就绪等待内。
+- 通知按钮 `getMe` 明确连接重置时最多重试 2 次（约 1s、3s，原为 1 次、500ms），每次等待后重新核验；全部尝试均 reset 才使用桥接已核验身份兜底。`identityRetries` 最大值相应变为 2。
+- 发送重连、401／其他网络错误不重试、不重发已写出请求等规则不变；重置来源仍未定。等待时长与发送重连共用同一常量。
+- Windows x64／Node 24.12.0 完整回归 387 项：386 通过、0 失败、1 项显式原生凭据测试跳过；更新并新增覆盖：两次 reset 后恢复、单查询 3 次 reset 退出、两查询合计 3 次上限、第二次重试前停止／撤销不再请求、按钮查询 3 次 reset 后兜底或失败、最后一次 reset 后授权／会话变化阻止兜底。尚未经 Mac 实机验收。
+
 ## 0.2.8-beta.1 — 2026-11-07
 
 依据 `0.2.8-beta.0` 的 macOS 证据（两个发送单元均在建连阶段 reset、请求未写出）做受限修复并细分取证；仅更新 npm `beta`，正式版 `latest` 仍为 0.2.7。
@@ -10,6 +19,7 @@
 - 诊断细分建连：`tcp-connected`、`tls-secure` 阶段，`connectFailure`（`tcp` TCP 建连失败／`read`、`write` TCP 已建立后 TLS 阶段读写错误／`tls-closed` TLS 完成前对端关闭／`timeout`／`other`），`tcpMs`，失败或成功连接的 `family`，以及尝试过的地址族序列 `attemptedFamilies`（只记 4/6，不含地址）。新增尝试类型 `reconnect`；每单元最多记录 6 次尝试、每次 12 个阶段。
 - 这是对已确认“未写出”失败的缓解，不代表查明 reset 来源；新的细分字段用于下一次 Mac 采集判断是否发生在 TLS 阶段及地址族。
 - Windows x64／Node 24.12.0 完整回归 384 项：383 通过、0 失败、1 项显式原生凭据测试跳过；新增覆盖重连成功、额度耗尽、各类不得重连情形、分类与地址族映射、真实 undici 回环（TCP 被拒后重连成功、TLS 阶段 RST 分类为 `read`）及真实 Stop hook 重连后送达。尚未经 Mac 实机验收。
+- macOS 实机（16:12:53 UTC）：用户确认 TG 与飞书均送达且均有按钮，摘要 `attached`、`identityRetries: 1`、`identityFallback: "bridge"`，Telegram 2/2。单元 1 首次 IPv4 TCP 385ms 建立后在 TLS 阶段收到 RST（`connectFailure: read`），未写出请求；约 1s 后 `reconnect` 新建连接完成 TLS、HTTP 200 确认。单元 2 复用该连接（空闲 27ms）一次成功。证实受限重连在实机生效，且失败连接为 IPv4，此次不支持 IPv6 假设。同轮 `update --yes` 中桥接初始化 `getWebhookInfo` 仍因连接重置在现有 1 次重试后失败（`DN-BRIDGE-CONNECTION-RESET`／`DN-MAINTENANCE-INCOMPLETE`），按钮身份查询亦两次 reset 后走桥接兜底；只读查询的重试额度仍不足，重置来源未定。
 
 ## 0.2.8-beta.0 — 2026-11-07
 

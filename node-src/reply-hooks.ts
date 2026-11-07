@@ -8,7 +8,7 @@ import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
 import { bridgeStatus, startBridge, bridgeBotUsername } from './reply-bridge.js';
-import { ReplyPreparationError, TelegramConnectionResetError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
+import { CONNECTION_RESET_RETRY_DELAYS, ReplyPreparationError, TelegramConnectionResetError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
 import { makePlan, deliver, type Message, type Plan } from './channels.js';
 import { completeToolCall, endSessionInteractions, finishInteraction, matchingCall, registerToolCall } from './reply-outcomes.js';
@@ -169,22 +169,22 @@ export async function attachReply(message: Message, data: any, file: string, opt
   };
   const api = apiFor(access, options);
   let bot, fromBridge = false;
-  try { bot = await api('getMe', {}); }
-  catch (error) {
-    if (!(error instanceof TelegramConnectionResetError)) throw new ReplyPreparationError(error);
-    options.replyDiagnostic?.('getme-reset-retry');
-    await (options.sleep ?? delay)(500);
-    const reason = await revalidate();
-    if (reason) return skip(reason);
-    try { bot = await api('getMe', {}); } // 只读查询最多重试一次，不重试发送消息。
-    catch (retryError) {
-      if (!(retryError instanceof TelegramConnectionResetError)) throw new ReplyPreparationError(retryError);
+  // 只读查询：明确 reset 时最多重试 2 次（约 1s、3s），每次等待后重新核验授权与会话；全部 reset 才用桥接已核验身份。
+  for (let retry = 0; ; retry++) {
+    try { bot = await api('getMe', {}); break; }
+    catch (error) {
+      if (!(error instanceof TelegramConnectionResetError)) throw new ReplyPreparationError(error);
+      if (retry >= CONNECTION_RESET_RETRY_DELAYS.length) {
+        const reason = await revalidate();
+        if (reason) return skip(reason);
+        const username = await bridgeBotUsername(file, access.identity);
+        if (!username) throw new ReplyPreparationError(error);
+        bot = { username }; fromBridge = true; break;
+      }
+      options.replyDiagnostic?.('getme-reset-retry');
+      await (options.sleep ?? delay)(CONNECTION_RESET_RETRY_DELAYS[retry]);
       const reason = await revalidate();
       if (reason) return skip(reason);
-      // 保留原请求顺序；只有两次明确 reset 才使用当前桥接已核验的身份。
-      const username = await bridgeBotUsername(file, access.identity);
-      if (!username) throw new ReplyPreparationError(retryError);
-      bot = { username }; fromBridge = true;
     }
   }
   if (typeof bot?.username !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(bot.username)) throw new ConfigError(t('reply.botUsernameInvalid'));

@@ -6,7 +6,7 @@ import { isIP } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HttpError, TransportError, type Plan } from '@quecue/notify-core';
 import { requestJson } from './channels.js';
-import { TelegramConnectionResetError } from './notification-diagnostics.js';
+import { CONNECTION_RESET_RETRY_DELAYS, TelegramConnectionResetError } from './notification-diagnostics.js';
 
 export type DeliveryStage = 'create' | 'connect' | 'tcp-connected' | 'tls-secure' | 'connected' | 'connect-error'
   | 'headers-sent' | 'body-sent' | 'response' | 'error';
@@ -31,7 +31,7 @@ export interface DeliveryTrace { units: DeliveryUnitTrace[]; omitted?: number }
 
 export const MAX_TRACE_UNITS = 8, MAX_TRACE_ATTEMPTS = 6, MAX_TRACE_STAGES = 12;
 /** 每单元重连前的等待（毫秒），以及每条通知的重连总数上限。 */
-export const RECONNECT_DELAYS: readonly number[] = [1000, 3000], MAX_RECONNECTS = 4;
+export const RECONNECT_DELAYS = CONNECTION_RESET_RETRY_DELAYS, MAX_RECONNECTS = 4;
 const ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH',
   'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_BODY_TIMEOUT', 'ABORT_ERR', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',

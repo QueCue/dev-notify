@@ -119,7 +119,7 @@ test('worker连续reset把最终阶段错误码写入租约，已有重试恢复
   await assert.rejects(runBridge(f.file, { env: f.env, sleep: async () => {}, api: () => async () => {
     attempts++; throw new TelegramConnectionResetError();
   } }), TelegramConnectionResetError);
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 3); // 同一查询最多重试 2 次。
   assert.deepEqual((await bridgeStatus(f.file)).problem, { key: 'bridge.failureReset', stage: 'getWebhookInfo' });
   const result = await cli(f, ['reply', 'status']);
   assert.match(result.text, /DN-BRIDGE-CONNECTION-RESET/);
