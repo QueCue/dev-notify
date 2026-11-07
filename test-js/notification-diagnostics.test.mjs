@@ -1,7 +1,10 @@
 import { test } from 'node:test';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import { TelegramApiError, HttpError, TransportError } from '@quecue/notify-core';
-import { safeFailureReason, safeDeliveryReason, ReplyPreparationError } from '../dist/notification-diagnostics.js';
+import { safeFailureReason, safeDeliveryReason, ReplyPreparationError, saveNotificationDiagnostic } from '../dist/notification-diagnostics.js';
 import { telegramApi } from '../dist/reply-telegram.js';
 import { setLocale, t } from '../dist/i18n.js';
 
@@ -28,6 +31,40 @@ for (const locale of ['zh', 'en']) test(`${locale} 安全诊断只保留错误�
     assert.equal(safeDeliveryReason('HTTP 请求失败（状态码 401）。' + secret), t('diagnostic.unknown'));
     assert.ok(!new ReplyPreparationError(new Error(secret)).message.includes('fake.invalid'));
   } finally { setLocale('zh'); }
+});
+test('恢复成功不会覆盖先前通知失败，后续失败按会话独立更新', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dev-notify-failure-history-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'config.json');
+  const failed = { version: 1, updated: 1, reply: 'getme-failed', channels: { telegram: { status: 'incomplete', sent: 0, planned: 1 } } };
+  const success = { version: 1, updated: 2, reply: 'attached', channels: { telegram: { status: 'complete', sent: 1, planned: 1 } } };
+  await saveNotificationDiagnostic(file, 'session-a', failed);
+  await saveNotificationDiagnostic(file, 'session-a', success);
+  const failurePath = path.join(file + '.reply-data', 'notification-failures', 'session-a.json');
+  assert.deepEqual(JSON.parse(await readFile(failurePath, 'utf8')), failed);
+  assert.deepEqual(JSON.parse(await readFile(path.join(file + '.reply-data', 'notification-diagnostics', 'session-a.json'), 'utf8')), success);
+  const later = { ...failed, updated: 3, reply: 'bridge-unready' };
+  await saveNotificationDiagnostic(file, 'session-a', later);
+  await saveNotificationDiagnostic(file, 'session-b', failed);
+  assert.deepEqual(JSON.parse(await readFile(failurePath, 'utf8')), later);
+  assert.deepEqual(JSON.parse(await readFile(path.join(file + '.reply-data', 'notification-failures', 'session-b.json'), 'utf8')), failed);
+});
+test('成功或未启用回复不制造失败记录，但渠道投递失败仍保留', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dev-notify-failure-kind-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'config.json');
+  const value = { version: 1, updated: 1, reply: 'disabled', channels: { feishu: { status: 'complete', sent: 1, planned: 1 } } };
+  await saveNotificationDiagnostic(file, 'session-a', value);
+  await assert.rejects(readdir(path.join(file + '.reply-data', 'notification-failures')), { code: 'ENOENT' });
+  await saveNotificationDiagnostic(file, 'session-a', { ...value, channels: { feishu: { status: 'failed', reason: safeFailureReason(new TransportError('PRIVATE')) } } });
+  assert.equal((await readdir(path.join(file + '.reply-data', 'notification-failures'))).length, 1);
+});
+test('非法会话ID不写诊断目录', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'dev-notify-failure-path-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const session of ['../outside', '/absolute', '', undefined])
+    await saveNotificationDiagnostic(path.join(root, 'config.json'), session, { version: 1, updated: 1, reply: 'attached', channels: {} });
+  assert.deepEqual(await readdir(root), []);
 });
 test('异常状态码不作为任意文字或无界数字输出', () => {
   for (const code of [-1, 0, 99999999, Infinity, NaN, 'FAKE_SECRET']) {

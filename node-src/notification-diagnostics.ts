@@ -16,8 +16,24 @@ export interface NotificationDiagnostic {
 }
 export async function saveNotificationDiagnostic(file: string, session: unknown, value: NotificationDiagnostic): Promise<void> {
   if (typeof session !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) return;
-  // 每会话只保留最后一份完成通知摘要；不记录正文、收件人、Token 或原始异常。
+  // 失败先单独保存，成功只更新最新摘要，不能抹掉自动恢复前的证据。
+  const failed = !['attached', 'disabled', 'not-attempted'].includes(value.reply)
+    || Object.values(value.channels).some(channel => channel.status !== 'complete');
+  if (failed) await atomicJson(path.join(replyDirectory(file), 'notification-failures', session + '.json'), value);
   await atomicJson(path.join(replyDirectory(file), 'notification-diagnostics', session + '.json'), value);
+}
+
+export type BridgeDiagnosticStage = 'authorization' | 'lease-read' | 'existing-unready' | 'runtime-paths'
+  | 'spawn' | 'wait-ready' | 'spawn-error' | 'child-exit' | 'worker-error' | 'wait-timeout'
+  | 'storage' | 'bot-lock' | 'lease-write' | 'getWebhookInfo' | 'getMe' | 'state-read'
+  | 'initial-getUpdates' | 'state-write' | 'ready' | 'polling' | 'cleanup';
+export interface BridgeFailureDiagnostic {
+  version: 1; updated: number; pid: number; stage: BridgeDiagnosticStage;
+  elapsedMs: number; outcome: 'failed' | 'unconfirmed'; reason?: string;
+}
+export async function saveBridgeFailure(file: string, source: 'start' | 'worker', value: BridgeFailureDiagnostic): Promise<void> {
+  // 每种来源只保留最近一次失败；不存凭据、API URL、响应正文或原始异常。
+  await atomicJson(path.join(replyDirectory(file), 'bridge-failures', source + '.json'), value);
 }
 
 // 仅保留类型和有界状态码；不输出底层异常、URL、Token 或服务端正文。

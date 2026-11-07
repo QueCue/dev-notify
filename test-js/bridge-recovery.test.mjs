@@ -11,7 +11,8 @@ import { acquireBotLock, processState } from '../dist/reply-lock.js';
 import { bridgeStatus, startBridge, runBridge } from '../dist/reply-bridge.js';
 import { atomicJson, policyPath, replyDirectory, botKey, accessReplies, stateTransaction } from '../dist/reply-state.js';
 import { configureClaudeCode } from '../dist/claude-code.js';
-import { parseConfig } from '../dist/config.js';
+import { parseConfig, appPaths } from '../dist/config.js';
+import { TransportError } from '../dist/channels.js';
 
 globalThis.fetch = async () => assert.fail('测试禁止真实网络');
 const OWNER = 'a'.repeat(32), OLD = 'b'.repeat(32);
@@ -160,6 +161,74 @@ test('本次子进程明确启动失败时有界结束', async t => {
   });
   assert.equal(ready, false);
 });
+for (const method of ['getWebhookInfo', 'getMe', 'initial-getUpdates'])
+test(`桥接失败保留阶段 ${method}，成功恢复不覆盖`, async t => {
+  const f = await fixture(t);
+  if (method === 'initial-getUpdates') {
+    const access = await accessReplies(f.file, f.env);
+    await stateTransaction(access, state => { state.offset = 0; state.entries = {}; });
+  }
+  const failedMethod = method === 'initial-getUpdates' ? 'getUpdates' : method;
+  await assert.rejects(runBridge(f.file, { env: f.env, maxIterations: 0, api: () => async name => {
+    if (name === failedMethod) throw new TransportError('PRIVATE_ERROR https://fake.invalid/bot123');
+    return name === 'getUpdates' ? [] : {};
+  } }));
+  const file = path.join(replyDirectory(f.file), 'bridge-failures', 'worker.json');
+  const before = await readFile(file, 'utf8'), failure = JSON.parse(before);
+  assert.equal(failure.stage, method); assert.equal(failure.outcome, 'failed');
+  assert.ok(Number.isFinite(failure.elapsedMs) && failure.elapsedMs >= 0);
+  assert.doesNotMatch(before, /PRIVATE_ERROR|fake\.invalid|bot123|123:FAKE_ONLY/);
+  await runBridge(f.file, { env: f.env, maxIterations: 0, api: () => async name => name === 'getUpdates' ? [] : {} });
+  assert.equal(await readFile(file, 'utf8'), before);
+});
+test('创建租约前的锁失败也有阶段记录且不泄露锁内容', async t => {
+  const f = await fixture(t), access = await accessReplies(f.file, f.env);
+  const directory = path.join(appPaths(process.platform, f.env).data, 'reply-bots');
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, access.policy.bot + '.lock'), 'PRIVATE_LOCK');
+  await assert.rejects(runBridge(f.file, { env: f.env }), /同一个 Bot/);
+  await assert.rejects(readFile(f.lease), { code: 'ENOENT' });
+  const text = await readFile(path.join(replyDirectory(f.file), 'bridge-failures', 'worker.json'), 'utf8');
+  assert.equal(JSON.parse(text).stage, 'bot-lock'); assert.doesNotMatch(text, /PRIVATE_LOCK|FAKE_ONLY/);
+});
+test('启动等待超时记为未确认而非已退出，后续成功不删除诊断', async t => {
+  const f = await fixture(t), child = Object.assign(new EventEmitter(), { pid: process.pid, unref() {} });
+  assert.equal(await startBridge(f.file, f.env, { spawn: () => child, sleep: async () => {} }), false);
+  const file = path.join(replyDirectory(f.file), 'bridge-failures', 'start.json');
+  const before = await readFile(file, 'utf8'), failure = JSON.parse(before);
+  assert.equal(failure.stage, 'wait-timeout'); assert.equal(failure.outcome, 'unconfirmed');
+  assert.equal(await startBridge(f.file, f.env, { spawn: () => child, sleep: async () => {
+    await atomicJson(f.lease, { pid: process.pid, owner: OWNER, ready: true, updated: Date.now() });
+  } }), true);
+  assert.equal(await readFile(file, 'utf8'), before);
+});
+for (const event of ['error', 'exit']) test(`子进程 ${event} 与等待超时分开记录`, async t => {
+  const f = await fixture(t), child = Object.assign(new EventEmitter(), { pid: process.pid, unref() {} });
+  assert.equal(await startBridge(f.file, f.env, { spawn: () => child, sleep: async () => {
+    if (event === 'error') child.emit('error', new Error('PRIVATE_SPAWN'));
+    else child.emit('exit', 1);
+  } }), false);
+  const text = await readFile(path.join(replyDirectory(f.file), 'bridge-failures', 'start.json'), 'utf8');
+  const failure = JSON.parse(text);
+  assert.equal(failure.stage, event === 'error' ? 'spawn-error' : 'child-exit');
+  assert.equal(failure.outcome, 'failed'); assert.doesNotMatch(text, /PRIVATE_SPAWN/);
+});
+test('同步spawn异常也安全留存，不吞掉原异常', async t => {
+  const f = await fixture(t);
+  await assert.rejects(startBridge(f.file, f.env, { spawn: () => { throw new Error('PRIVATE_SPAWN'); } }), /PRIVATE_SPAWN/);
+  const text = await readFile(path.join(replyDirectory(f.file), 'bridge-failures', 'start.json'), 'utf8');
+  assert.equal(JSON.parse(text).stage, 'spawn'); assert.doesNotMatch(text, /PRIVATE_SPAWN/);
+});
+
+test('桥接诊断写入失败不覆盖原错误或触发重新启动', async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(replyDirectory(f.file), 'bridge-failures'), '阻止创建诊断目录');
+  let spawned = 0;
+  await assert.rejects(startBridge(f.file, f.env, { spawn: () => { spawned++; throw new Error('ORIGINAL_FAILURE'); } }), /ORIGINAL_FAILURE/);
+  assert.equal(spawned, 1);
+  await assert.rejects(runBridge(f.file, { env: f.env, api: () => async () => { throw new TransportError('ORIGINAL_FAILURE'); } }), /ORIGINAL_FAILURE/);
+});
+
 test('耗时异步工作期间独立续心跳，退出后不会把已清理租约写回来', async t => {
   const f = await fixture(t);
   let advanced = false;

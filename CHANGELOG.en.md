@@ -2,6 +2,15 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.7-beta.0 — 2026-11-07
+
+Diagnostic prerelease using only the npm `beta` tag, without moving stable `latest`. Intended to investigate post-upgrade bridge startup and notification failures; it does not establish or fix their macOS root cause.
+
+- Retain the latest notification failure per session separately from the latest notification snapshot, so subsequent success does not overwrite the failure. No message body, credential, or recipient is saved.
+- Retain separate parent/worker bridge failure snapshots with a safe stage, monotonic elapsed time, and outcome, covering authorization, locks, leases, Telegram initialization, and exit. A readiness wait timeout is unconfirmed rather than proof of exit. Recovery preserves the record; diagnostic write failures do not change startup outcomes or trigger retries.
+
+- Windows x64 / Node 24 regression totals 288 tests: 287 passed, 0 failed, and 1 opt-in native credential test skipped. The macOS upgrade scenario still awaits user verification.
+
 ## 0.2.6 — 2026-11-07
 
 - Distinguish unavailable session verification from confirmed exit: denied access, query failures, and damaged or incomplete registries pause remote input while retaining unsubmitted queues with their original expiry. New local input still cancels old queues; submitted or unknown-result input is never requeued.

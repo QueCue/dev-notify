@@ -11,6 +11,20 @@ import { telegramApi, type TelegramApi } from './reply-telegram.js';
 import { acquireBotLock, processState } from './reply-lock.js';
 import { drainReplies, processUpdate } from './reply-engine.js';
 import { drainInteractionFeedback } from './reply-outcomes.js';
+import { saveBridgeFailure, safeFailureReason, type BridgeDiagnosticStage } from './notification-diagnostics.js';
+
+interface BridgeAttempt {
+  started: number; stage: BridgeDiagnosticStage;
+  failure?: { stage: BridgeDiagnosticStage; reason: string };
+}
+async function recordFailure(file: string, source: 'start' | 'worker', attempt: BridgeAttempt, error?: unknown): Promise<void> {
+  const failure = attempt.failure;
+  await saveBridgeFailure(file, source, { version: 1, updated: Date.now(), pid: process.pid,
+    stage: failure?.stage ?? attempt.stage, elapsedMs: Math.max(0, Math.round(performance.now() - attempt.started)),
+    outcome: source === 'worker' || error !== undefined || ['spawn-error', 'child-exit', 'worker-error'].includes(attempt.stage) ? 'failed' : 'unconfirmed',
+    ...(failure ? { reason: failure.reason } : error !== undefined ? { reason: safeFailureReason(error) } : {}),
+  }).catch(() => {}); // 诊断写入失败不能改变启动结果或触发重试。
+}
 
 interface Lease { pid: number; owner: string; ready: boolean; updated: number; error?: string }
 const leasePath = (file: string) => path.join(replyDirectory(file), 'bridge.json');
@@ -45,13 +59,24 @@ export interface BridgeStartDependencies {
   sleep?: (ms: number) => Promise<unknown>;
 }
 export async function startBridge(file: string, env: Env = process.env, deps: BridgeStartDependencies = {}): Promise<boolean> {
+  const attempt: BridgeAttempt = { started: performance.now(), stage: 'authorization' };
+  try {
+    const ready = await startBridgeAttempt(file, env, deps, attempt);
+    if (!ready) await recordFailure(file, 'start', attempt);
+    return ready;
+  } catch (error) { await recordFailure(file, 'start', attempt, error); throw error; }
+}
+async function startBridgeAttempt(file: string, env: Env, deps: BridgeStartDependencies, attempt: BridgeAttempt): Promise<boolean> {
   const access = await accessReplies(file, env);
   if (!access) throw new ConfigError(t('reply.bridgeAuthFirst'));
+  attempt.stage = 'lease-read';
   const previous = await readJson(leasePath(file)) as Lease | null;
   const existing = statusOf(previous);
-  if (existing.running) return existing.ready;
+  if (existing.running) { if (!existing.ready) attempt.stage = 'existing-unready'; return existing.ready; }
+  attempt.stage = 'runtime-paths';
   const node = await realpath(process.execPath), cli = await realpath(fileURLToPath(new URL('./cli.js', import.meta.url)));
   // 无 shell、无命令行秘密、无系统开机自启；worker 自己持有排他锁。
+  attempt.stage = 'spawn';
   const child = (deps.spawn ?? spawn)(node, [cli, 'reply', 'run', '--config', path.resolve(file)], {
     detached: true, windowsHide: true, shell: false, stdio: 'ignore', env: { ...process.env, ...env },
   });
@@ -59,13 +84,18 @@ export async function startBridge(file: string, env: Env = process.env, deps: Br
   child.once('error', () => { failed = true; });
   child.once('exit', () => { exited = true; });
   child.unref();
+  attempt.stage = 'wait-ready';
   // 实际网络启动可能超过3秒；只等待有界15秒，不因旧进程留下的error提前放弃。
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let waitAttempt = 0; waitAttempt < 100; waitAttempt++) {
     await (deps.sleep ?? delay)(150);
     const lease = await readJson(leasePath(file)) as Lease | null;
     if (statusOf(lease).ready) return true;
-    if (failed || exited || lease?.pid === child.pid && lease?.owner !== previous?.owner && lease?.error) return false;
+    if (failed || exited || lease?.pid === child.pid && lease?.owner !== previous?.owner && lease?.error) {
+      attempt.stage = failed ? 'spawn-error' : exited ? 'child-exit' : 'worker-error';
+      return false;
+    }
   }
+  attempt.stage = 'wait-timeout';
   return false;
 }
 export interface BridgeOptions {
@@ -82,17 +112,24 @@ export interface BridgeOptions {
   heartbeatMs?: number;
 }
 export async function runBridge(file: string, options: BridgeOptions = {}): Promise<void> {
+  const attempt: BridgeAttempt = { started: performance.now(), stage: 'authorization' };
+  try { await runBridgeAttempt(file, options, attempt); }
+  catch (error) { await recordFailure(file, 'worker', attempt, error); throw error; }
+}
+async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: BridgeAttempt): Promise<void> {
   const env = options.env ?? process.env;
   let access = await accessReplies(file, env);
   if (!access) throw new ConfigError(t('reply.bridgeNotAuthorized'));
   const heartbeatMs = options.heartbeatMs ?? 5000;
   if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs < 10 || heartbeatMs > 10000) throw new ConfigError(t('reply.bridgeFailed'));
+  attempt.stage = 'storage';
   const directory = replyDirectory(file);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const botDirectory = path.join(appPaths(process.platform, env).data, 'reply-bots');
   await mkdir(botDirectory, { recursive: true, mode: 0o700 });
   const lockPath = path.join(botDirectory, access.policy.bot + '.lock');
   const owner = randomBytes(16).toString('hex');
+  attempt.stage = 'bot-lock';
   const lock = await acquireBotLock(lockPath, owner);
   const lease: Lease = { pid: process.pid, owner, ready: false, updated: Date.now() };
   let stopping = false;
@@ -114,6 +151,7 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
   let beating = false, heartbeatFailed = false;
   const stopHeartbeat = () => { stopping = true; if (heartbeat) clearInterval(heartbeat); };
   try {
+    attempt.stage = 'lease-write';
     await saveLease();
     heartbeat = setInterval(() => {
       if (beating || stopping) return;
@@ -122,18 +160,27 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
     }, heartbeatMs);
     heartbeat.unref();
     let api = (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
+    attempt.stage = 'getWebhookInfo';
     const webhook = await api('getWebhookInfo', {});
     if (webhook?.url) throw new ConfigError(t('reply.webhookConflict'));
+    attempt.stage = 'getMe';
     await api('getMe', {});
+    attempt.stage = 'state-read';
     const currentState = await stateTransaction(access, state => ({ offset: state.offset, empty: Object.keys(state.entries).length === 0 }));
     if (!currentState.offset && currentState.empty) {
+      attempt.stage = 'initial-getUpdates';
       const old = await api('getUpdates', { offset: -1, timeout: 0, allowed_updates: ['message', 'callback_query'] });
-      if (Array.isArray(old) && old.length) await stateTransaction(access, state => {
-        const id = old[old.length - 1]?.update_id;
-        if (Number.isSafeInteger(id)) state.offset = Math.max(state.offset, id + 1);
-      });
+      if (Array.isArray(old) && old.length) {
+        attempt.stage = 'state-write';
+        await stateTransaction(access, state => {
+          const id = old[old.length - 1]?.update_id;
+          if (Number.isSafeInteger(id)) state.offset = Math.max(state.offset, id + 1);
+        });
+      }
     }
+    attempt.stage = 'ready';
     lease.ready = true; await saveLease();
+    attempt.stage = 'polling';
     let iteration = 0, failures = 0;
     while (!await isStopped() && iteration++ < (options.maxIterations ?? Infinity)) {
       // 桥接是长驻进程，语言切换后要跟着配置文件走；否则后续消息会和 hook 进程的语言不一致。
@@ -174,11 +221,13 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
     }
     if (heartbeatFailed) throw new ConfigError(t('reply.bridgeFailed'));
   } catch (error) {
+    attempt.failure = { stage: attempt.stage, reason: safeFailureReason(error) };
     stopHeartbeat();
     lease.ready = false; lease.error = error instanceof ConfigError ? error.message : t('reply.bridgeFailed');
     await saveLease().catch(() => {});
     throw error;
   } finally {
+    attempt.stage = 'cleanup';
     stopHeartbeat();
     await writes;
     process.off('SIGTERM', stop); process.off('SIGINT', stop);
