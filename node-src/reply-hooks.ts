@@ -7,7 +7,7 @@ import { lookupSession, SessionLookupError, type SessionLookup } from './reply-p
 import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
-import { bridgeStatus, startBridge } from './reply-bridge.js';
+import { bridgeStatus, startBridge, bridgeBotUsername } from './reply-bridge.js';
 import { ReplyPreparationError, TelegramConnectionResetError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
 import { makePlan, deliver, type Message, type Plan } from './channels.js';
@@ -148,33 +148,56 @@ export async function attachReply(message: Message, data: any, file: string, opt
   const ready = options.bridge ? await options.bridge(file, options.env ?? process.env)
     : (await bridgeStatus(file)).ready || await startBridge(file, options.env);
   if (!ready) { options.replyDiagnostic?.('bridge-unready'); options.err?.(t('reply.bridgeNotReadyButton')); return null; }
+  const revalidate = async (): Promise<ReplyDiagnosticCode | null> => {
+    const current = await accessReplies(file, options.env);
+    if (!current) return 'disabled';
+    if (current.identity !== access.identity) return 'identity-changed';
+    const active = await getTarget(data, options);
+    if (!active || targetEpoch(active) !== targetEpoch(target)) return 'identity-changed';
+    const latest = await stateTransaction(current, state => state.sessions[target.session]);
+    if (!latest || latest.unverified === true) return 'session-unverified';
+    if (latest.working) return 'session-working';
+    if (!latest.tracked) return 'input-unobserved';
+    if (targetEpoch(latest) !== targetEpoch(target)) return 'identity-changed';
+    const stillReady = options.bridge ? await options.bridge(file, options.env ?? process.env) : (await bridgeStatus(file)).ready;
+    return stillReady ? null : 'bridge-unready';
+  };
   const api = apiFor(access, options);
-  let bot;
-  try {
-    try { bot = await api('getMe', {}); }
-    catch (error) {
-      if (!(error instanceof TelegramConnectionResetError)) throw error;
-      options.replyDiagnostic?.('getme-reset-retry');
-      await (options.sleep ?? delay)(500);
-      const current = await accessReplies(file, options.env);
-      if (!current) return skip('disabled');
-      if (current.identity !== access.identity) return skip('identity-changed');
-      const active = await getTarget(data, options);
-      if (!active || targetEpoch(active) !== targetEpoch(target)) return skip('identity-changed');
-      const latest = await stateTransaction(current, state => state.sessions[target.session]);
-      if (!latest || latest.unverified === true) return skip('session-unverified');
-      if (latest.working) return skip('session-working');
-      if (!latest.tracked) return skip('input-unobserved');
-      if (targetEpoch(latest) !== targetEpoch(target)) return skip('identity-changed');
-      const stillReady = options.bridge ? await options.bridge(file, options.env ?? process.env) : (await bridgeStatus(file)).ready;
-      if (!stillReady) return skip('bridge-unready');
-      bot = await api('getMe', {}); // 只读查询最多重试一次，不重试发送消息。
+  let bot, fromBridge = false;
+  try { bot = await api('getMe', {}); }
+  catch (error) {
+    if (!(error instanceof TelegramConnectionResetError)) throw new ReplyPreparationError(error);
+    options.replyDiagnostic?.('getme-reset-retry');
+    await (options.sleep ?? delay)(500);
+    const reason = await revalidate();
+    if (reason) return skip(reason);
+    try { bot = await api('getMe', {}); } // 只读查询最多重试一次，不重试发送消息。
+    catch (retryError) {
+      if (!(retryError instanceof TelegramConnectionResetError)) throw new ReplyPreparationError(retryError);
+      const reason = await revalidate();
+      if (reason) return skip(reason);
+      // 保留原请求顺序；只有两次明确 reset 才使用当前桥接已核验的身份。
+      const username = await bridgeBotUsername(file, access.identity);
+      if (!username) throw new ReplyPreparationError(retryError);
+      bot = { username }; fromBridge = true;
     }
-  } catch (error) { throw new ReplyPreparationError(error); }
+  }
   if (typeof bot?.username !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(bot.username)) throw new ConfigError(t('reply.botUsernameInvalid'));
+  const reason = await revalidate();
+  if (reason) return skip(reason);
   const token = randomBytes(16).toString('hex');
-  await stateTransaction(access, state => { state.entries['token:' + token] = { session: target.session, epoch: targetEpoch(target), updated: Date.now() }; });
+  const commitReason = await stateTransaction(access, (state): ReplyDiagnosticCode | null => {
+    const latest = state.sessions[target.session];
+    if (!latest || latest.unverified === true) return 'session-unverified';
+    if (latest.working) return 'session-working';
+    if (!latest.tracked) return 'input-unobserved';
+    if (targetEpoch(latest) !== targetEpoch(target)) return 'identity-changed';
+    state.entries['token:' + token] = { session: target.session, epoch: targetEpoch(target), updated: Date.now() };
+    return null;
+  });
+  if (commitReason) return skip(commitReason);
   message.reply = { token, url: `https://t.me/${bot.username}?start=${token}`, users: access.policy.users };
+  if (fromBridge) options.replyDiagnostic?.('getme-bridge-fallback');
   options.replyDiagnostic?.('attached');
   return { access, token };
 }

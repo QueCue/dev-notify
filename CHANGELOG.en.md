@@ -2,9 +2,16 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.7-beta.3 — 2026-11-07
+
+- Preserve the existing `getMe` query and single connection-reset retry order for completion notifications. Only after both attempts explicitly fail with `ECONNRESET`, revalidate authorization, session, and bridge before allowing the bot username verified during the current active lease's initialization to be reused. Older bridges without that metadata retain ordinary-notification degradation without restarting a live worker. No fallback for 401, invalid usernames, or other errors.
+- Bind bridge identity metadata to the full authorization identity and current owner; require confirmed process liveness, a fresh heartbeat, ready state, no error, and no stop request for that owner. Recheck session state in the button-token commit transaction so new local input during the query does not inherit stale buttons. Diagnostics mark actual use only as `identityFallback: "bridge"`, without storing the username.
+- Leave network-reset send retry boundaries and the shared communication dependency unchanged. This adds a guarded fallback for identity-query failures, not an established fix or explanation of the macOS reset source. This prerelease updates npm `beta` only, without moving stable `latest`; the first real macOS notification after the change still requires acceptance.
+- Full isolated regression on Windows x64 / Node 24.12.0 totals 353 tests: 352 passed, 0 failed, and 1 opt-in native credential test skipped. Added coverage combines real bridge initialization with simulated default notification transport, buttons on both channels after two resets, no resend on delivery failure, authorization/session-change guards, legacy/invalid lease degradation, and diagnostics without sensitive data. This is not macOS real-machine or actual terminal-input acceptance.
+
 ## 0.2.7-beta.2 — 2026-11-07
 
-First-notification handling prerelease; updates npm `beta` only, without moving stable `latest`. The real macOS first-notification scenario still awaits validation.
+First-notification handling prerelease; updates npm `beta` only, without moving stable `latest`. macOS real-machine feedback: after installation and one maintenance run, without extra warm-up, the first real notification reached both Telegram and Feishu but had no reply buttons. The summary records `getMe` failing with `ECONNRESET` despite one retry. Button acceptance failed for this run; the issue is not established as fixed, and the reset source remains unknown.
 
 - Extend the single read-only retry for confirmed `ECONNRESET` to completion notifications' `getMe` button identity lookup, rather than only bridge initialization. Revalidate authorization, session identity, input tracking, and bridge readiness after the delay without weakening access controls. Notification summaries record the count as `identityRetries`.
 - Ordinary Telegram notifications and bridge requests share the safe connection-reset classification, but notification sending is still not retried on network reset. Other channels are not mislabeled as Telegram resets; the shared communication-library dependency is unchanged.

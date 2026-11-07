@@ -26,7 +26,8 @@ async function recordFailure(file: string, source: 'start' | 'worker', attempt: 
   }).catch(() => {}); // 诊断写入失败不能改变启动结果或触发重试。
 }
 
-interface Lease { pid: number; owner: string; ready: boolean; updated: number; error?: string }
+interface Lease { pid: number; owner: string; ready: boolean; updated: number; error?: string;
+  identity?: string; botUsername?: string }
 const leasePath = (file: string) => path.join(replyDirectory(file), 'bridge.json');
 const controlPath = (file: string) => path.join(replyDirectory(file), 'stop.json');
 function alive(pid: unknown): boolean {
@@ -41,6 +42,17 @@ function statusOf(lease: Lease | null): { running: boolean; ready: boolean; erro
 }
 export async function bridgeStatus(file: string): Promise<{ running: boolean; ready: boolean; error?: string }> {
   return statusOf(await readJson(leasePath(file)) as Lease | null);
+}
+export async function bridgeBotUsername(file: string, identity: string): Promise<string | null> {
+  const lease = await readJson(leasePath(file)) as Lease | null;
+  // 仅复用当前授权下、同一活跃租约的初始化结果；旧租约不提供兜底身份。
+  if (!lease || !statusOf(lease).ready || lease.identity !== identity || !/^[a-f0-9]{32}$/.test(lease.owner)
+    || typeof lease.botUsername !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(lease.botUsername)) return null;
+  if ((await readJson(controlPath(file)))?.owner === lease.owner) return null;
+  const current = await readJson(leasePath(file)) as Lease | null;
+  if (!current || current.owner !== lease.owner || current.identity !== identity
+    || current.botUsername !== lease.botUsername || !statusOf(current).ready) return null;
+  return lease.botUsername;
 }
 export async function stopBridge(file: string): Promise<boolean> {
   const lease = await readJson(leasePath(file)) as Lease | null;
@@ -180,7 +192,10 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
     const webhook = await initialize('getWebhookInfo');
     if (webhook?.url) throw new ConfigError(t('reply.webhookConflict'));
     attempt.stage = 'getMe';
-    await initialize('getMe');
+    const bot = await initialize('getMe');
+    if (typeof bot?.username === 'string' && /^[A-Za-z0-9_]{5,64}$/.test(bot.username)) {
+      lease.identity = access.identity; lease.botUsername = bot.username;
+    }
     attempt.stage = 'state-read';
     const currentState = await stateTransaction(access, state => ({ offset: state.offset, empty: Object.keys(state.entries).length === 0 }));
     if (!currentState.offset && currentState.empty) {

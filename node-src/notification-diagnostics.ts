@@ -6,13 +6,14 @@ import { atomicJson, replyDirectory } from './reply-state.js';
 
 export type ReplyDiagnosticCode = 'not-attempted' | 'disabled' | 'session-unverified' | 'state-missing'
   | 'session-working' | 'input-unobserved' | 'identity-changed' | 'bridge-unready' | 'getme-failed'
-  | 'check-failed' | 'getme-reset-retry' | 'attached';
+  | 'check-failed' | 'getme-reset-retry' | 'getme-bridge-fallback' | 'attached';
 export interface NotificationDiagnostic {
   version: 1;
   updated: number;
   reply: ReplyDiagnosticCode;
   replyReason?: string;
   identityRetries?: number;
+  identityFallback?: 'bridge';
   channels: Partial<Record<'telegram' | 'feishu', { status: 'complete' | 'incomplete' | 'failed'; sent?: number; planned?: number; reason?: string }>>;
 }
 export async function saveNotificationDiagnostic(file: string, session: unknown, value: NotificationDiagnostic): Promise<void> {

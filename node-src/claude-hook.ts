@@ -96,6 +96,7 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
   const options = { send: context.send, ...context.reply, env: context.env, err: context.err, response: context.response,
     replyDiagnostic: (code: ReplyDiagnosticCode) => {
       if (code === 'getme-reset-retry') diagnostic.identityRetries = (diagnostic.identityRetries ?? 0) + 1;
+      else if (code === 'getme-bridge-fallback') diagnostic.identityFallback = 'bridge';
       else diagnostic.reply = code;
       context.reply?.replyDiagnostic?.(code);
     } };

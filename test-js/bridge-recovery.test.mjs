@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { acquireBotLock, processState } from '../dist/reply-lock.js';
-import { bridgeStatus, startBridge, runBridge } from '../dist/reply-bridge.js';
+import { bridgeStatus, startBridge, runBridge, bridgeBotUsername } from '../dist/reply-bridge.js';
 import { atomicJson, policyPath, replyDirectory, botKey, accessReplies, stateTransaction } from '../dist/reply-state.js';
 import { configureClaudeCode } from '../dist/claude-code.js';
 import { parseConfig, appPaths } from '../dist/config.js';
@@ -72,6 +72,47 @@ test('Windows实际tasklist只读回退让权限受限观察者识别就绪桥�
     assert.deepEqual(await bridgeStatus(f.file), { running: true, ready: true, error: undefined });
     assert.equal(await startBridge(f.file, f.env, { spawn: () => assert.fail('不能启动第二个消费者') }), true);
   } finally { process.kill = original; }
+});
+
+test('桥接只向匹配授权提供本次初始化身份，退出后不保留', async t => {
+  const f = await fixture(t), access = await accessReplies(f.file, f.env);
+  await runBridge(f.file, { env: f.env, maxIterations: 1, api: () => async method => {
+    if (method === 'getMe') return { username: 'FakeTestBot', private: 'PRIVATE_RESPONSE' };
+    if (method === 'getUpdates') {
+      assert.equal(await bridgeBotUsername(f.file, access.identity), 'FakeTestBot');
+      assert.equal(await bridgeBotUsername(f.file, 'different-identity'), null);
+      const text = await readFile(f.lease, 'utf8');
+      assert.doesNotMatch(text, /PRIVATE_RESPONSE|FAKE_ONLY/);
+      return [];
+    }
+    return {};
+  } });
+  assert.equal(await bridgeBotUsername(f.file, access.identity), null);
+});
+for (const kind of ['legacy', 'identity', 'username', 'owner', 'unready', 'error', 'expired', 'future', 'dead', 'stop'])
+test(`桥接身份兜底拒绝${kind}租约`, async t => {
+  const f = await fixture(t), access = await accessReplies(f.file, f.env);
+  const lease = { pid: process.pid, owner: OWNER, ready: true, updated: Date.now(), identity: access.identity, botUsername: 'FakeTestBot' };
+  if (kind === 'legacy') { delete lease.identity; delete lease.botUsername; }
+  if (kind === 'identity') lease.identity = 'different-identity';
+  if (kind === 'username') lease.botUsername = 'invalid/name';
+  if (kind === 'owner') lease.owner = 'invalid-owner';
+  if (kind === 'unready') lease.ready = false;
+  if (kind === 'error') lease.error = 'safe-error';
+  if (kind === 'expired') lease.updated -= 60000;
+  if (kind === 'future') lease.updated += 60000;
+  if (kind === 'dead') lease.pid = departed;
+  await atomicJson(f.lease, lease);
+  if (kind === 'stop') await atomicJson(path.join(replyDirectory(f.file), 'stop.json'), { owner: OWNER });
+  assert.equal(await bridgeBotUsername(f.file, access.identity), null);
+});
+test('上一owner的停止请求不使当前有效身份失效，新owner无身份时不继承旧值', async t => {
+  const f = await fixture(t), access = await accessReplies(f.file, f.env);
+  await atomicJson(f.lease, { pid: process.pid, owner: OWNER, ready: true, updated: Date.now(), identity: access.identity, botUsername: 'FakeTestBot' });
+  await atomicJson(path.join(replyDirectory(f.file), 'stop.json'), { owner: OLD });
+  assert.equal(await bridgeBotUsername(f.file, access.identity), 'FakeTestBot');
+  await atomicJson(f.lease, { pid: process.pid, owner: OLD, ready: true, updated: Date.now() });
+  assert.equal(await bridgeBotUsername(f.file, access.identity), null);
 });
 
 test('Bot锁正常持有与幂等释放，不删除别人的新owner', async t => {
