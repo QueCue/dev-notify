@@ -2,6 +2,17 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.8 — 2026-11-08
+
+Consolidates the delivery diagnostics and connection-reset mitigations from `0.2.8-beta.0` through `beta.2` and updates npm `latest` as a stable release; functional code is identical to `0.2.8-beta.2`.
+
+- Completion-notification Telegram diagnostics record per-send-unit stages (including TCP/TLS sub-stages, a connection-failure category, TCP time, the address-family sequence, and new/reused connections), containing only indexes and numbers, never recipients, bodies, credentials, URLs, IPs, headers, or raw exceptions.
+- Completion-notification Telegram sends reconnect the same unit only when this process confirmed that the request was created, connection setup failed, and nothing was written or received: at most 2 times per unit (about 1 s, then 3 s) and 4 per notification. A written request or an unknown outcome is never resent. Plain CLI `send` is unchanged.
+- Retries for confirmed connection resets on read-only queries now follow the same schedule as sends: bridge initialization `getWebhookInfo`/`getMe` at most 2 times each and 3 in total; the notification-button `getMe` at most 2 times, using the bridge-verified identity only when every attempt resets. Authorization and state are revalidated after every wait.
+- macOS field findings: every failure was a reset during connection setup with the request unwritten; the failed connections were IPv4, receiving an RST during TLS after TCP was established; reused connections were unaffected, and resets came in bursts lasting several seconds from an undetermined source. `0.2.8-beta.2` field acceptance: Telegram and Feishu both delivered with buttons, and two manual `reply stop`/`reply start` runs each became ready on the first try.
+- Known limitation: if `update --yes` maintenance coincides with a reset burst (observed: three consecutive resets within about 6.5 s), it still reports `DN-BRIDGE-CONNECTION-RESET` / `DN-MAINTENANCE-INCOMPLETE`; the bridge restarts on the next notification event, or run `dev-notify reply start` manually. This release does not claim the reset root cause is gone.
+- Full Windows x64 / Node 24.12.0 regression: 387 tests, 386 passed, 0 failed, 1 explicit native-credential test skipped.
+
 ## 0.2.8-beta.2 — 2026-11-08
 
 Based on the `0.2.8-beta.1` macOS result (send reconnects worked, but the single read-only query retry was still insufficient), this widens the read-only query retry allowance. It updates only npm `beta`; the stable `latest` remains 0.2.7.
@@ -10,6 +21,7 @@ Based on the `0.2.8-beta.1` macOS result (send reconnects worked, but the single
 - The notification-button `getMe` retries at most 2 times on confirmed connection reset (about 1 s, then 3 s; previously once after 500 ms), revalidating after every wait; only when every attempt resets is the bridge-verified identity used as a fallback. The maximum `identityRetries` becomes 2 accordingly.
 - Send reconnects, no retry for 401 or other network errors, and never resending written requests are unchanged; the reset source is still undetermined. The wait schedule shares one constant with send reconnects.
 - Full Windows x64 / Node 24.12.0 regression: 387 tests, 386 passed, 0 failed, 1 explicit native-credential test skipped. Updated and new tests cover recovery after two resets, exit after three resets of one query, the 3-retry total across both queries, no request after a stop/revoke before the second retry, button lookup fallback or failure after three resets, and authorization/session changes after the last reset blocking the fallback. Not yet accepted on a Mac.
+- macOS field result (16:29:20 UTC): the user confirmed Telegram and Feishu both delivered with buttons; summary `attached` with no `identityRetries` (the button `getMe` succeeded first time), Telegram 2/2, both units reused an existing connection (idle 68 ms and 24 ms) and succeeded first time; no resets in this notification. In the same round, bridge initialization `getWebhookInfo` during `update --yes` still reported `DN-BRIDGE-CONNECTION-RESET` / `DN-MAINTENANCE-INCOMPLETE`; the bridge failure record (16:28:45 UTC) shows `elapsedMs` 6496, consistent with three requests plus the ~1 s and ~3 s waits, so the new allowance was exhausted with three consecutive resets within about 6.5 s. About 35 s later the bridge started by a notification event became ready normally, and `reply status` reports it ready. Resets arrive in bursts lasting several seconds; the source is still undetermined.
 
 ## 0.2.8-beta.1 — 2026-11-07
 

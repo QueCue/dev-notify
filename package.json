@@ -1,6 +1,6 @@
 {
   "name": "@quecue/dev-notify",
-  "version": "0.2.8-beta.2",
+  "version": "0.2.8",
   "description": "跨平台开发任务通知工具，支持 Telegram 与飞书",
   "license": "MIT",
   "repository": {
