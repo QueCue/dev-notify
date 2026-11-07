@@ -32,7 +32,7 @@ The default installation uses npm's `latest` tag; `alpha` is a prerelease tag an
 The diagnostic prerelease requires explicit installation; ordinary `update` does not switch to `beta`:
 
 ```sh
-npm install -g @quecue/dev-notify@0.2.7-beta.0 --registry=https://registry.npmjs.org/
+npm install -g @quecue/dev-notify@0.2.7-beta.1 --registry=https://registry.npmjs.org/
 dev-notify --version
 dev-notify update --yes  # maintain existing hooks/bridge after beta installation, without switching tags
 ```
@@ -187,6 +187,8 @@ Stop sends a request through a control file with a random instance identifier an
 Authorization is in `<notification config>.reply.json`; messages/sessions/offset/queue/interaction state in `<notification config>.reply-data/`; the bot lock in `reply-bots/` under the data directory shown by `paths`. Queued reply text, questions, tool input, and answers pending return are briefly written to local state; normal reply text is removed before submission; structured interactions are retained until completion or confirmation timeout, after which question, argument, and answer text are cleared, while result receipts and message IDs are retained briefly for feedback and for rejecting old buttons. Validity checks are logical decisions only; files are not automatically erased after shutdown. POSIX uses 0700/0600; Windows relies on account directory ACLs; other processes of the same user can still read them. Do not commit, share, or package these files (already added to ignore rules and kept out of the npm whitelist).
 
 Version 0.2.6 pauses remote input when session identity cannot temporarily be verified, without treating query failure as process exit. Unsubmitted queued replies retain their original 5-minute expiry and resume attempts only after a later lifecycle event verifies the same identity. New local input still cancels old queues; submitted or unknown-result input is never requeued. Hook readiness also checks existing readable Node/CLI files and POSIX Node execute permission. This local snapshot cannot prove Windows execution policy, project/managed policy, or actual event execution. Settings-lock permission failures are reported separately from existing locks.
+
+Prerelease `0.2.7-beta.1` allows one retry after 500 ms for bridge initialization's read-only `getWebhookInfo`/`getMe` queries when `ECONNRESET` is explicitly identified, sharing one allowance per startup. Stop requests or revoked/changed authorization prevent another request; other errors do not trigger this rule. Notification sending, initial update consumption, and terminal input receive no added retries. This neither guarantees recovery nor identifies the reset source.
 
 Diagnostic prerelease `0.2.7-beta.0` additionally retains the latest notification failure at `<notification config>.reply-data/notification-failures/<session ID>.json` and separate parent/worker bridge failures at `bridge-failures/start.json` and `bridge-failures/worker.json`. Subsequent success does not clear these records. Stages, elapsed times, and outcomes support later diagnosis, do not establish a current fault, and do not trigger retries or replay. Only one snapshot is retained per session/source; files do not expire automatically and can be cleared with the dedicated reply state. Historical failures already overwritten by older versions cannot be reconstructed.
 

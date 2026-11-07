@@ -2,6 +2,15 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.7-beta.1 — 2026-11-07
+
+Connection-reset handling prerelease; updates npm `beta` only while stable `latest` remains `0.2.6`. macOS real-machine validation is still pending.
+
+- Preserve a safe category for identifiable underlying `ECONNRESET` errors in Telegram bridge requests without storing URLs, tokens, raw exceptions, or server bodies. Other network or certificate failures are not inferred to be connection resets.
+- Only read-only bridge initialization queries `getWebhookInfo` and `getMe` may retry once after 500 ms on connection reset, sharing one allowance per startup and rechecking authorization and stop state before retrying. Another failure still exits with retained diagnostics. This adds no retries to notification sending, update consumption, or terminal input, does not establish the reset source, and still awaits macOS real-machine validation.
+
+- Regression totals 307 tests: 306 passed, 0 failed, and 1 opt-in native credential test skipped. Coverage includes underlying-error classification, the shared retry allowance, revocation/stop guards, simulated recovery through the real transport adapter, and no added send retries.
+
 ## 0.2.7-beta.0 — 2026-11-07
 
 Diagnostic prerelease using only the npm `beta` tag, without moving stable `latest`. Intended to investigate post-upgrade bridge startup and notification failures; it does not establish or fix their macOS root cause.

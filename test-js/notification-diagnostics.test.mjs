@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { TelegramApiError, HttpError, TransportError } from '@quecue/notify-core';
-import { safeFailureReason, safeDeliveryReason, ReplyPreparationError, saveNotificationDiagnostic } from '../dist/notification-diagnostics.js';
+import { safeFailureReason, safeDeliveryReason, ReplyPreparationError, saveNotificationDiagnostic, TelegramConnectionResetError } from '../dist/notification-diagnostics.js';
 import { telegramApi } from '../dist/reply-telegram.js';
 import { setLocale, t } from '../dist/i18n.js';
 
@@ -65,6 +65,43 @@ test('非法会话ID不写诊断目录', async t => {
   for (const session of ['../outside', '/absolute', '', undefined])
     await saveNotificationDiagnostic(path.join(root, 'config.json'), session, { version: 1, updated: 1, reply: 'attached', channels: {} });
   assert.deepEqual(await readdir(root), []);
+});
+for (const location of ['direct', 'cause', 'aggregate', 'cycle']) test(`真实传输适配器只保留ECONNRESET分类：${location}`, async () => {
+  const previous = globalThis.fetch;
+  const reset = Object.assign(new Error('PRIVATE_TOKEN https://fake.invalid'), { code: 'ECONNRESET' });
+  const error = location === 'direct' ? reset : location === 'cause' ? new TypeError('PRIVATE', { cause: reset })
+    : location === 'aggregate' ? new TypeError('PRIVATE', { cause: new AggregateError([reset]) }) : Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' });
+  if (location === 'cycle') error.cause = error;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw error; };
+  try {
+    await assert.rejects(telegramApi('123:FAKE_ONLY')('getWebhookInfo', {}), failure => {
+      assert.ok(failure instanceof TelegramConnectionResetError);
+      assert.match(safeFailureReason(failure), /ECONNRESET/);
+      assert.doesNotMatch(failure.message, /PRIVATE|fake\.invalid|FAKE_ONLY/);
+      assert.equal(failure.cause, undefined);
+      return true;
+    });
+    assert.equal(calls, 1); // API适配层本身不添加重试。
+  } finally { globalThis.fetch = previous; }
+});
+for (const code of ['ETIMEDOUT', 'ENOTFOUND', 'CERT_HAS_EXPIRED']) test(`${code}不伪装成连接重置`, async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => { throw Object.assign(new Error('PRIVATE'), { code }); };
+  try {
+    await assert.rejects(telegramApi('123:FAKE_ONLY')('getWebhookInfo', {}), failure => {
+      assert.ok(failure instanceof TransportError); assert.ok(!(failure instanceof TelegramConnectionResetError));
+      assert.doesNotMatch(failure.message, /PRIVATE/); return true;
+    });
+  } finally { globalThis.fetch = previous; }
+});
+test('sendMessage连接重置不自动重试，即使收到结果未知', async () => {
+  const previous = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async () => { calls++; throw Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' }); };
+  try {
+    await assert.rejects(telegramApi('123:FAKE_ONLY')('sendMessage', { chat_id: 111, text: 'FAKE_ONLY' }), TelegramConnectionResetError);
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = previous; }
 });
 test('异常状态码不作为任意文字或无界数字输出', () => {
   for (const code of [-1, 0, 99999999, Infinity, NaN, 'FAKE_SECRET']) {

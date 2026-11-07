@@ -32,7 +32,7 @@ dev-notify setup
 诊断测试版需显式安装，不会由普通 `update` 自动切换到 `beta`：
 
 ```sh
-npm install -g @quecue/dev-notify@0.2.7-beta.0 --registry=https://registry.npmjs.org/
+npm install -g @quecue/dev-notify@0.2.7-beta.1 --registry=https://registry.npmjs.org/
 dev-notify --version
 dev-notify update --yes  # 已安装 beta 后，执行现有 hooks/桥接维护，不切换标签
 ```
@@ -187,6 +187,8 @@ dev-notify reply run        # 前台诊断启动/网络问题，不与 start 实
 授权在 `<通知配置>.reply.json`，消息/会话/offset/队列/交互状态在 `<通知配置>.reply-data/`；Bot 锁在 `paths` 所示 data 目录的 `reply-bots/`。排队回复原文、问题、工具输入和待回传答案会短暂写入本地状态；提交前会移除普通回复原文；结构化交互保留到完成或确认超时，随后清除问题、参数与答案正文，短期保留结果收据和消息 ID，用于反馈及拒绝旧按钮。有效期检查只是逻辑判断，停机后文件不会自动擦除。POSIX 使用 0700/0600，Windows 依赖账号目录 ACL；同一用户的其他进程仍然可以读取。请不要提交、共享或打包这些文件（已加入忽略规则及 npm 白名单）。
 
 0.2.6 在会话身份暂时无法核验时暂停远程输入，不把查询失败当作进程退出；尚未提交的排队回复保留原有 5 分钟有效期，仅在后续生命周期事件重新核验同一身份后恢复尝试。新的本地输入仍取消旧队列；已提交或结果未知的输入不会重新排队。hooks 就绪检查还核验 Node/CLI 文件存在、可读及 POSIX Node 执行权限；这只是本地快照，不保证 Windows 执行策略、项目/托管策略或真实事件执行成功。设置锁的权限错误与已有锁会分别报告。
+
+测试版 `0.2.7-beta.1` 针对桥接初始化的 `getWebhookInfo`／`getMe` 只读查询，在明确识别到连接重置 `ECONNRESET` 时延迟 500 毫秒重试一次；两种查询共用一次启动额度。停止请求、撤销或变更授权会阻止再次请求；其他错误不会触发这项规则。通知发送、初始更新消费和终端输入不增加重试；不能据此保证故障恢复或判断连接被谁重置。
 
 诊断测试版 `0.2.7-beta.0` 另外保留 `<通知配置>.reply-data/notification-failures/<会话 ID>.json` 的最近一次通知失败，以及 `bridge-failures/start.json`、`bridge-failures/worker.json` 的最近一次桥接父进程/工作进程失败。后续成功不会清除这些记录；阶段、耗时和结果只用于事后诊断，不表示当前仍有故障，也不触发重试或补发。每个会话/来源只保留一份，文件不自动过期删除，可随专属回复状态人工清理；已被旧版覆盖的历史失败无法补回。
 

@@ -11,7 +11,7 @@ import { telegramApi, type TelegramApi } from './reply-telegram.js';
 import { acquireBotLock, processState } from './reply-lock.js';
 import { drainReplies, processUpdate } from './reply-engine.js';
 import { drainInteractionFeedback } from './reply-outcomes.js';
-import { saveBridgeFailure, safeFailureReason, type BridgeDiagnosticStage } from './notification-diagnostics.js';
+import { saveBridgeFailure, safeFailureReason, TelegramConnectionResetError, type BridgeDiagnosticStage } from './notification-diagnostics.js';
 
 interface BridgeAttempt {
   started: number; stage: BridgeDiagnosticStage;
@@ -118,8 +118,9 @@ export async function runBridge(file: string, options: BridgeOptions = {}): Prom
 }
 async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: BridgeAttempt): Promise<void> {
   const env = options.env ?? process.env;
-  let access = await accessReplies(file, env);
-  if (!access) throw new ConfigError(t('reply.bridgeNotAuthorized'));
+  const initialAccess = await accessReplies(file, env);
+  if (!initialAccess) throw new ConfigError(t('reply.bridgeNotAuthorized'));
+  let access: ReplyAccess = initialAccess;
   const heartbeatMs = options.heartbeatMs ?? 5000;
   if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs < 10 || heartbeatMs > 10000) throw new ConfigError(t('reply.bridgeFailed'));
   attempt.stage = 'storage';
@@ -160,11 +161,26 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
     }, heartbeatMs);
     heartbeat.unref();
     let api = (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
+    let retriedInitialization = false;
+    const initialize = async (method: 'getWebhookInfo' | 'getMe'): Promise<any> => {
+      try { return await api(method, {}); }
+      catch (error) {
+        // 仅本次初始化共用一次重试额度，不重发通知、不重新消费更新或提交输入。
+        if (!(error instanceof TelegramConnectionResetError) || retriedInitialization) throw error;
+        retriedInitialization = true;
+        await recordFailure(file, 'worker', attempt, error);
+        log(t('reply.initConnectionReset'));
+        await (options.sleep ?? delay)(500);
+        const after = await fresh();
+        if (!after || after.identity !== access.identity || await isStopped() || heartbeatFailed) throw error;
+        return await api(method, {});
+      }
+    };
     attempt.stage = 'getWebhookInfo';
-    const webhook = await api('getWebhookInfo', {});
+    const webhook = await initialize('getWebhookInfo');
     if (webhook?.url) throw new ConfigError(t('reply.webhookConflict'));
     attempt.stage = 'getMe';
-    await api('getMe', {});
+    await initialize('getMe');
     attempt.stage = 'state-read';
     const currentState = await stateTransaction(access, state => ({ offset: state.offset, empty: Object.keys(state.entries).length === 0 }));
     if (!currentState.offset && currentState.empty) {

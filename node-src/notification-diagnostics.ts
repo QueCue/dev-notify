@@ -42,7 +42,11 @@ export class TelegramRequestError extends ConfigError {
     super(t(code === 409 ? 'reply.telegramConflict' : 'reply.telegramRequestFailed'));
   }
 }
+export class TelegramConnectionResetError extends TransportError {
+  constructor() { super(t('diagnostic.connectionReset')); }
+}
 export function safeFailureReason(error: unknown): string {
+  if (error instanceof TelegramConnectionResetError) return t('diagnostic.connectionReset');
   if (error instanceof TelegramRequestError || error instanceof TelegramApiError) {
     const code = error.code;
     return Number.isSafeInteger(code) && code >= 100 && code <= 599
