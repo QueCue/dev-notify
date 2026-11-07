@@ -3,6 +3,7 @@ import { ConfigError } from './config.js';
 import { t } from './i18n.js';
 import path from 'node:path';
 import { atomicJson, replyDirectory } from './reply-state.js';
+import type { DeliveryTrace } from './delivery-trace.js';
 
 export type ReplyDiagnosticCode = 'not-attempted' | 'disabled' | 'session-unverified' | 'state-missing'
   | 'session-working' | 'input-unobserved' | 'identity-changed' | 'bridge-unready' | 'getme-failed'
@@ -14,7 +15,9 @@ export interface NotificationDiagnostic {
   replyReason?: string;
   identityRetries?: number;
   identityFallback?: 'bridge';
-  channels: Partial<Record<'telegram' | 'feishu', { status: 'complete' | 'incomplete' | 'failed'; sent?: number; planned?: number; reason?: string }>>;
+  channels: Partial<Record<'telegram' | 'feishu', { status: 'complete' | 'incomplete' | 'failed'; sent?: number; planned?: number; reason?: string;
+    /** 仅 Telegram：逐发送单元的序号、阶段和白名单分类，不含身份或正文。 */
+    trace?: DeliveryTrace }>>;
 }
 export async function saveNotificationDiagnostic(file: string, session: unknown, value: NotificationDiagnostic): Promise<void> {
   if (typeof session !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) return;
