@@ -14,6 +14,7 @@ function harness(latest, { answer = 'y', installStatus = 0, check = false, yes =
   const prompts = { text: async label => { promptsSeen.push(label); return answer; } };
   return { output, calls, promptsSeen, postCalls, options: {
     out: text => output.push(text), prompts, check, yes, runner, latest: async () => latest,
+    installed: async expected => expected === latest,
     post: async () => { postCalls.push(true); return postCode; },
   } };
 }
@@ -92,6 +93,27 @@ test('安装失败明确报错且不执行维护', async () => {
   const h = harness('0.1.2', { installStatus: 1 });
   await assert.rejects(updatePackage('0.1.1', h.options), /更新没有完成/);
   assert.equal(h.postCalls.length, 0);
+});
+test('npm更新了另一安装入口时拒绝假报成功或从旧入口维护', async () => {
+  const h = harness('0.1.2');
+  h.options.installed = async expected => { assert.equal(expected, '0.1.2'); return false; };
+  await assert.rejects(updatePackage('0.1.1', h.options), /当前命令入口未更新/);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.postCalls.length, 0);
+  assert.doesNotMatch(h.output.join('\n'), /已更新到|维护步骤已完成/);
+});
+test('默认安装核验读取自身包版本，不把npm退出0当作入口已升级', async () => {
+  const h = harness('9.9.9');
+  h.options.installed = undefined;
+  await assert.rejects(updatePackage('0.1.1', h.options), /当前命令入口未更新/);
+  assert.equal(h.postCalls.length, 0);
+});
+test('只检查或取消时不执行安装入口核验', async () => {
+  for (const options of [{ check: true }, { answer: 'n' }]) {
+    const h = harness('0.1.2', options);
+    h.options.installed = async () => assert.fail('尚未安装不得核验');
+    await updatePackage('0.1.1', h.options);
+  }
 });
 test('拒绝非法版本号', async () => {
   const h = harness('0.1.2; rm -rf /');

@@ -1,0 +1,142 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+import { acquireBotLock, processState } from '../dist/reply-lock.js';
+import { bridgeStatus, startBridge, runBridge } from '../dist/reply-bridge.js';
+import { atomicJson, policyPath, replyDirectory, botKey, accessReplies, stateTransaction } from '../dist/reply-state.js';
+import { configureClaudeCode } from '../dist/claude-code.js';
+import { parseConfig } from '../dist/config.js';
+
+globalThis.fetch = async () => assert.fail('测试禁止真实网络');
+const OWNER = 'a'.repeat(32), OLD = 'b'.repeat(32);
+const departed = spawnSync(process.execPath, ['-e', ''], { timeout: 10000 }).pid;
+async function temp(t) {
+  const root = await mkdtemp(path.join(tmpdir(), 'dev-notify-bridge-recovery-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return { root, lock: path.join(root, 'bot.lock') };
+}
+async function fixture(t) {
+  const { root } = await temp(t);
+  const file = path.join(root, 'config.json');
+  const env = { DEV_NOTIFY_HOME: path.join(root, 'app'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'),
+    TELEGRAM_BOT_TOKEN: '123:FAKE_ONLY', FEISHU_WEBHOOK: '', FEISHU_SECRET: '' };
+  const config = { version: 1, telegram: { enabled: true, chat_ids: ['111'] }, feishu: { enabled: false } };
+  await atomicJson(file, config);
+  await configureClaudeCode(file, 'install', { out() {}, text: async () => 'y', secret: async () => assert.fail('不读取秘密') }, { env });
+  await atomicJson(policyPath(file), { version: 1, enabled: true, users: ['111'], permissions: false,
+    bot: botKey(parseConfig(config, env)), generation: 'c'.repeat(32) });
+  const access = await accessReplies(file, env);
+  await stateTransaction(access, state => { state.offset = 10; });
+  return { root, file, env, lease: path.join(replyDirectory(file), 'bridge.json') };
+}
+
+test('Bot锁正常持有与幂等释放，不删除别人的新owner', async t => {
+  const f = await temp(t);
+  const lock = await acquireBotLock(f.lock, OWNER);
+  assert.equal(JSON.parse(await readFile(f.lock, 'utf8')).owner, OWNER);
+  await writeFile(f.lock, JSON.stringify({ pid: process.pid, owner: OLD }));
+  await lock.release(); await lock.release();
+  assert.equal(JSON.parse(await readFile(f.lock, 'utf8')).owner, OLD);
+});
+test('确认死亡的有效Bot锁自动回收，清理恢复门闩', async t => {
+  const f = await temp(t);
+  await writeFile(f.lock, JSON.stringify({ pid: departed, owner: OLD }));
+  const lock = await acquireBotLock(f.lock, OWNER);
+  try {
+    assert.equal(JSON.parse(await readFile(f.lock, 'utf8')).pid, process.pid);
+    await assert.rejects(readFile(f.lock + '.recover'), { code: 'ENOENT' });
+  } finally { await lock.release(); }
+  await assert.rejects(readFile(f.lock), { code: 'ENOENT' });
+});
+for (const state of ['alive', 'unknown']) {
+  test(`PID${state}（包含复用/权限未知）不能抢锁`, async t => {
+    const f = await temp(t), original = JSON.stringify({ pid: departed, owner: OLD });
+    await writeFile(f.lock, original);
+    await assert.rejects(acquireBotLock(f.lock, OWNER, () => state), /同一个 Bot/);
+    assert.equal(await readFile(f.lock, 'utf8'), original);
+  });
+}
+test('坏锁和残留恢复门闩保守拒绝，不猜测删除', async t => {
+  const f = await temp(t);
+  await writeFile(f.lock, 'invalid-owner');
+  await assert.rejects(acquireBotLock(f.lock, OWNER), /同一个 Bot/);
+  assert.equal(await readFile(f.lock, 'utf8'), 'invalid-owner');
+  await writeFile(f.lock, JSON.stringify({ pid: departed, owner: OLD }));
+  await writeFile(f.lock + '.recover', 'existing-recovery');
+  await assert.rejects(acquireBotLock(f.lock, OWNER), /同一个 Bot/);
+  assert.equal(await readFile(f.lock + '.recover', 'utf8'), 'existing-recovery');
+});
+test('两个恢复者竞争死亡Bot锁，只能有一个持有者', async t => {
+  const f = await temp(t);
+  await writeFile(f.lock, JSON.stringify({ pid: departed, owner: OLD }));
+  const results = await Promise.allSettled([acquireBotLock(f.lock, OWNER), acquireBotLock(f.lock, 'd'.repeat(32))]);
+  const successful = results.filter(r => r.status === 'fulfilled');
+  assert.equal(successful.length, 1);
+  await successful[0].value.release();
+});
+test('真实隔离子进程被强杀后，下一实例可以恢复Bot锁', { timeout: 10000 }, async t => {
+  const f = await temp(t);
+  const module = new URL('../dist/reply-lock.js', import.meta.url).href;
+  const script = `import { acquireBotLock } from ${JSON.stringify(module)}; await acquireBotLock(process.argv[1], ${JSON.stringify(OLD)}); console.log('ready'); setInterval(()=>{},1000);`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, f.lock], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  const exited = once(child, 'exit');
+  await once(child.stdout, 'data');
+  child.kill('SIGKILL');
+  await exited;
+  assert.equal(processState(child.pid), 'dead');
+  const lock = await acquireBotLock(f.lock, OWNER);
+  await lock.release();
+});
+test('心跳过期只表示不健康，不能当作活进程已退出', async t => {
+  const f = await fixture(t);
+  await atomicJson(f.lease, { pid: process.pid, owner: OWNER, ready: true, updated: Date.now() - 60000 });
+  const status = await bridgeStatus(f.file);
+  assert.equal(status.running, true);
+  assert.equal(status.ready, false);
+});
+test('上次已退出桥接的error不能让新启动过早失败，允许超过3秒的启动', async t => {
+  const f = await fixture(t);
+  await atomicJson(f.lease, { pid: departed, owner: OLD, ready: false, updated: Date.now(), error: 'OLD_TEST_ERROR' });
+  let waits = 0;
+  const child = Object.assign(new EventEmitter(), { pid: process.pid, unref() {} });
+  const ready = await startBridge(f.file, f.env, {
+    spawn: () => child,
+    sleep: async () => {
+      if (++waits === 25) await atomicJson(f.lease, { pid: process.pid, owner: OWNER, ready: true, updated: Date.now() });
+    },
+  });
+  assert.equal(ready, true);
+  assert.equal(waits, 25);
+});
+test('本次子进程明确启动失败时有界结束', async t => {
+  const f = await fixture(t);
+  const child = Object.assign(new EventEmitter(), { pid: process.pid, unref() {} });
+  const ready = await startBridge(f.file, f.env, {
+    spawn: () => child,
+    sleep: async () => { await atomicJson(f.lease, { pid: process.pid, owner: OWNER, ready: false, updated: Date.now(), error: 'NEW_TEST_ERROR' }); },
+  });
+  assert.equal(ready, false);
+});
+test('耗时异步工作期间独立续心跳，退出后不会把已清理租约写回来', async t => {
+  const f = await fixture(t);
+  let advanced = false;
+  await runBridge(f.file, { env: f.env, heartbeatMs: 10, maxIterations: 1, api: () => async method => {
+    if (method !== 'getUpdates') return {};
+    const before = JSON.parse(await readFile(f.lease, 'utf8')).updated;
+    await delay(80);
+    const after = JSON.parse(await readFile(f.lease, 'utf8')).updated;
+    advanced = after > before;
+    assert.equal((await bridgeStatus(f.file)).ready, true);
+    return [];
+  } });
+  assert.equal(advanced, true);
+  await delay(40);
+  await assert.rejects(readFile(f.lease), { code: 'ENOENT' });
+});

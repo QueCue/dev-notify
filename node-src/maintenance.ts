@@ -6,6 +6,7 @@ import { ConfigError, type Env } from './config.js';
 import { t } from './i18n.js';
 import { claudeCodeStatus, type IntegrationStatus } from './claude-code.js';
 import { bridgeStatus } from './reply-bridge.js';
+import { accessReplies } from './reply-state.js';
 
 type HooksStatus = Pick<IntegrationStatus, 'stop' | 'notification' | 'lifecycle' | 'interaction' | 'configs'>;
 type BridgeState = Pick<Awaited<ReturnType<typeof bridgeStatus>>, 'running'>;
@@ -18,6 +19,7 @@ export interface PostUpdateOptions {
   run?: (args: string[]) => number;
   hooks?: () => Promise<HooksStatus>;
   bridge?: () => Promise<BridgeState>;
+  authorized?: () => Promise<boolean>;
   wait?: (ms: number) => Promise<void>;
 }
 
@@ -61,16 +63,23 @@ export async function postUpdate(options: PostUpdateOptions): Promise<number> {
   let bridgeState: BridgeState | null = null;
   try { bridgeState = await bridge(); }
   catch (error) { options.err(t('maintenance.bridgeCheckFailed', { reason: reason(error) })); failed = true; }
-  if (bridgeState?.running) {
-    options.out(t('maintenance.restartingBridge'));
+  let resume = bridgeState?.running === true;
+  if (bridgeState && !resume) {
+    try { resume = await (options.authorized ?? (async () => !!await accessReplies(options.config, options.env)))(); }
+    catch (error) { options.err(t('maintenance.bridgeCheckFailed', { reason: reason(error) })); failed = true; }
+  }
+  if (bridgeState && resume) {
+    options.out(t(bridgeState.running ? 'maintenance.restartingBridge' : 'maintenance.startingBridge'));
     try {
-      // 0 表示已停止或本来未运行；1 表示停止请求已登记，下面等待进程释放锁。
-      run(['reply', 'stop', '--config', options.config]);
-      let stillRunning = true;
-      for (let i = 0; i < 20; i++) {
-        try { stillRunning = (await bridge()).running; } catch { break; }
-        if (!stillRunning) break;
-        await wait(500);
+      let stillRunning = bridgeState.running;
+      if (stillRunning) {
+        // 心跳过期不等于进程退出；必须等待活进程真正退出，才启动新版本。
+        run(['reply', 'stop', '--config', options.config]);
+        for (let i = 0; i < 20; i++) {
+          try { stillRunning = (await bridge()).running; } catch { break; }
+          if (!stillRunning) break;
+          await wait(500);
+        }
       }
       if (stillRunning) { options.err(t('maintenance.bridgeStillRunning')); failed = true; }
       else if (run(['reply', 'start', '--config', options.config]) === 0) options.out(t('maintenance.bridgeRestarted'));

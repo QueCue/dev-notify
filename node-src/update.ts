@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
 import { terminalPrompts, type Prompts } from './prompts.js';
@@ -62,6 +63,8 @@ export interface UpdateOptions {
   yes: boolean;
   runner?: UpdateRunner;
   latest?: () => Promise<string>;
+  /** 核验当前入口对应的安装，防止npm实际更新了另一个prefix/源码副本。 */
+  installed?: (expected: string) => Promise<boolean>;
   /** 安装成功后运行维护步骤；未提供时只打印提示。 */
   post?: () => Promise<number>;
 }
@@ -89,6 +92,13 @@ async function runMaintenance(options: UpdateOptions, updated: boolean): Promise
   return 0;
 }
 
+async function currentEntryInstalled(expected: string): Promise<boolean> {
+  try {
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    return pkg.name === NAME && pkg.version === expected;
+  } catch { return false; }
+}
+
 export async function updatePackage(current: string, options: UpdateOptions): Promise<number> {
   if (!VERSION.test(current)) throw new ConfigError(t('update.currentFormat'));
   const latest = await (options.latest ?? fetchLatest)();
@@ -109,6 +119,7 @@ export async function updatePackage(current: string, options: UpdateOptions): Pr
   options.out(t('update.running', { name: NAME, latest }));
   const result = (options.runner ?? npmRunner)(['install', '-g', `${NAME}@${latest}`], false);
   if (result.status !== 0) throw new ConfigError(t('update.failed', { name: NAME }));
+  if (!await (options.installed ?? currentEntryInstalled)(latest)) throw new ConfigError(t('update.entryMismatch', { latest }));
   options.out(t('update.updated', { latest }));
   return await runMaintenance(options, true);
 }

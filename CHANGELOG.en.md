@@ -2,6 +2,13 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.4 — 2026-11-07
+
+- Recover valid bot locks belonging to confirmed exited processes so a crashed reply bridge does not permanently remove Reply to Claude buttons. Live processes, reused PIDs, unknown permissions, and damaged locks are not preempted; concurrent recovery is serialized.
+- Maintain an independent bridge heartbeat and distinguish process liveness from readiness. Bound startup waiting at 15 seconds and ignore errors left by an exited instance while a new instance starts.
+- Restore an authorized but stopped bridge during `update` maintenance; wait for the old process to exit rather than treating a stale heartbeat as an exit. After npm installation, verify the current entry's package version and report a mismatch instead of maintaining hooks from an old Node/npm installation.
+- Add dead-lock, concurrent recovery, actual isolated child-process termination, heartbeat, stale-error, and update-maintenance regressions. Current totals: 237 tests, 236 passed and 1 opt-in native credential test skipped; not acceptance on every platform.
+
 ## 0.2.3 — 2026-11-07
 
 - Change `@quecue/notify-core` from exact `0.1.0` to the compatible range `^0.1.0`, allowing stable releases `>=0.1.0 <0.2.0`. The lockfile still pins the tested `0.1.0`; update package validation and tests accordingly. This does not change the published `0.2.2`.
