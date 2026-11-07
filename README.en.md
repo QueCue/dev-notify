@@ -2,9 +2,15 @@
 
 English | [简体中文](README.md)
 
-Cross-platform developer task notification tool written in **TypeScript / Node.js** and distributed via npm, with no standalone executable or other script runtime required. General notifications do not depend on Claude Code, Unity, or a project directory.
+Cross-platform developer task notification tool written in **TypeScript / Node.js** and distributed via npm, with no standalone executable or other script runtime required. General notifications do not depend on Claude Code or a project directory.
 
-**The npm package name is `@quecue/dev-notify`. `0.1.3` provides Claude Code reply notifications plus native PC and Telegram two-sided question answering and result feedback.** For version changes and upgrade notes, see [CHANGELOG.en.md](CHANGELOG.en.md); the published version is authoritative on the npm registry.
+**The npm package name is `@quecue/dev-notify`, with general notifications, Claude Code remote replies, and local/Telegram two-sided question answering and result feedback.** Source repository: [QueCue/dev-notify](https://github.com/QueCue/dev-notify). For changes and upgrade notes, see [CHANGELOG.en.md](CHANGELOG.en.md); published versions and distribution tags are authoritative on the npm registry, and source changes do not constitute a release.
+
+### Communication dependency in 0.2.2 source
+
+The current 0.2.2 source extracts Telegram/Feishu communication into the standard npm runtime dependency `@quecue/notify-core`, pinned to exactly `0.1.0`. Source: [QueCue/notify-core](https://github.com/QueCue/notify-core). This structure does not describe the published `0.2.1` package.
+
+npm installs the dependency; builds compile only this application without copying the communication library or linking sibling source. npm users do not install the library manually. `@quecue/notify-core@0.1.0` has been published through GitHub Actions. The lockfile pins its registry source and integrity; use `npm ci --ignore-scripts` for source development.
 
 ## Installation and usage
 
@@ -13,6 +19,7 @@ Requires Node.js 22 or later; initial targets are Windows and macOS. Runtime dep
 Install from npm:
 
 ```sh
+npm view @quecue/dev-notify dist-tags
 npm install -g @quecue/dev-notify
 dev-notify --version
 dev-notify setup
@@ -20,27 +27,22 @@ dev-notify setup
 
 You can also override credentials and recipients with environment variables: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`, `FEISHU_WEBHOOK`, `FEISHU_SECRET`; and path variables `DEV_NOTIFY_HOME`, `CLAUDE_CONFIG_DIR`. Explicitly present variables take precedence, and empty values also override; see "Paths, templates, and environment variables" below for complete rules and custom variable names.
 
-`0.1.0-alpha.1` does not include Claude Code hooks; the reply interactions below require `0.1.0-alpha.3` or later. After upgrading, re-run `dev-notify integration claude-code install` to update the complete hooks, and stop and restart any existing reply bridge; existing valid authorizations and notification credentials do not need to be reconfigured. If you use a custom configuration, keep passing the original `--config` path. For source development, build in the project directory and run:
+The default installation uses npm's `latest` tag; `alpha` is a prerelease tag and does not imply a newer version than the stable release. Use the `npm view` command above to check tags and `dev-notify --version` to check the installed version. See the changelog for upgrade notes; after upgrading, update the complete hooks and restart any existing reply bridge. Valid authorizations and notification credentials do not need to be reconfigured; keep passing the original `--config` path for custom configurations.
 
-```sh
-npm ci --ignore-scripts
-npm run build
-node dist/cli.js setup
-node dist/cli.js doctor
-```
+The main instructions below use the npm-installed `dev-notify` command; see "Development and verification" for source builds and `node dist/cli.js` usage.
 
 After configuration is complete, send:
 
 ```sh
-node dist/cli.js send --title "Build complete" --content "Installer generated"
-node dist/cli.js send --title "Test results" --content-file result.txt
-node dist/cli.js send --title "Task output" --stdin
-node dist/cli.js send --title "Segment preview" --content-file result.txt --dry-run
+dev-notify send --title "Build complete" --content "Installer generated"
+dev-notify send --title "Test results" --content-file result.txt
+dev-notify send --title "Task output" --stdin
+dev-notify send --title "Segment preview" --content-file result.txt --dry-run
 ```
 
 To install locally as the `dev-notify` command, run `npm install --global .` after building, then use `dev-notify setup`, `dev-notify send ...`, and so on. This is a local source install, not an install from the public registry; this project does not automatically install globally or publish.
 
-npm handles installation, upgrades, and uninstallation of the official package. **Clearing credentials before uninstalling is recommended**: npm uninstall does not automatically delete user credentials. First run `dev-notify credentials clear` interactively, then uninstall. That command deletes only the Node credential referenced by the current configuration and does not touch other accounts, other configurations, or old-prototype credentials.
+npm handles installation, upgrades, and uninstallation of the official package. **Clearing credentials before uninstalling is recommended**: npm uninstall does not automatically delete user credentials. First run `dev-notify credentials clear` interactively, then uninstall. That command deletes only the Node credential referenced by the current configuration; it does not scan other configurations, delete unrelated entries, or handle old-prototype credentials. However, configuration copies sharing the same credential reference will also lose access to that credential.
 
 Installed versions can be upgraded with `update`; it only checks the version and invokes npm, and does not download or replace files itself:
 
@@ -73,7 +75,7 @@ Actual integrity verification, registry configuration, permission handling, and 
 ## Configuration wizard
 
 ```sh
-node dist/cli.js setup
+dev-notify setup
 ```
 
 1. Choose Telegram, Feishu, or both; when editing an existing configuration, the current selection is shown and pressing Enter keeps it.
@@ -84,12 +86,12 @@ node dist/cli.js setup
 6. After confirmation, Claude Code notification hooks are merged and installed by default (`--no-hooks` skips it). Existing integrations are left as-is and are not added again.
 7. Remote reply authorization is not requested in setup; when Telegram is available, it prompts you to run `reply setup` separately to choose specific trusted private-chat users and confirm separately.
 
-Editing an existing configuration no longer asks a second time whether to continue; leaving a secret blank preserves the stored value, and entering `-` for an optional signature clears it. Channels that are not selected are disabled, and new entries retain credentials only for the selected channels. Environment variables still take precedence (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`, `FEISHU_WEBHOOK`, `FEISHU_SECRET`); the wizard indicates which variables are overriding configuration, and tests and the final save both use the effective values. See the complete list in "Paths, templates, and environment variables".
+Editing an existing configuration no longer asks a second time whether to continue; leaving a secret blank preserves the stored value, and entering `-` for an optional signature clears it. Channels that are not selected are disabled, and new entries retain credentials only for the selected channels. Environment variables still take precedence (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`, `FEISHU_WEBHOOK`, `FEISHU_SECRET`); the wizard indicates which variables are overriding configuration. Tests and subsequent runtime operations use the effective values after environment overrides, but persistence saves the wizard-entered credentials and selected recipients; environment overrides are not automatically written back to configuration or system credentials. See the complete list in "Paths, templates, and environment variables".
 
 For automation, use the secret-free template and CI secrets:
 
 ```sh
-node dist/cli.js setup --template --yes
+dev-notify setup --template --yes
 ```
 
 To save configuration only without sending a test or installing hooks, use `setup --no-test` / `setup --no-hooks` (they can be combined). The template does not overwrite existing configuration. `--yes` can only be used with `--template`; interactive confirmation is still required before saving secrets.
@@ -187,7 +189,7 @@ The Node version uses **Windows Credential Manager / macOS Keychain**, passing s
 - When native component loading fails, storage is locked, or access is denied, it reports an explicit error and does not fall back to a plaintext file. macOS may request system authorization; system prompts may still appear in offline environments.
 - By default it does not enumerate system entries and accesses only the current reference or a random entry created in this run.
 
-The old prototype used `backend: "system"`, which on Windows is a DPAPI file and not the same store as Node Credential Manager. Node does not read or delete it. For old configurations, run `setup` to re-enter and generate a Node reference; the original credentials remain unchanged. Early prototype source, tests, and documentation have been removed from the main branch but remain available in Git history.
+The old prototype used `backend: "system"`, which on Windows is a DPAPI file and not the same store as Node Credential Manager. Node does not read or delete it. For old configurations, run `setup` to re-enter and generate a Node reference; the original credentials remain unchanged. This compatibility restriction does not affect configurations already using `keyring` references.
 
 ## Paths, templates, and environment variables
 
@@ -269,7 +271,7 @@ Save flow: write a new random system entry → verify readability → atomically
 Configuration writes use an exclusive `.setup.lock`, and the original file is checked before writing and before switching. Avoid concurrently editing configuration with an editor while the wizard is saving; editors do not honor this lock. Power loss or force-kill may leave locks or orphaned entries, and storage and JSON are not cross-system atomic transactions. Only after confirming that no wizard is running should residual locks be handled; the program does not proactively scan or delete unknown entries.
 
 ```sh
-node dist/cli.js credentials clear
+dev-notify credentials clear
 ```
 
 Cleanup requires interactive confirmation; it first removes the current JSON reference, then attempts to delete its Node entry; environment variables remain unchanged. Configuration copies sharing the same old reference are also affected, and this is communicated before the operation. Deletion failure is clearly warned and is not shown as cleaned.
@@ -292,20 +294,32 @@ If one recipient fails midway, its subsequent segments stop, while Telegram cont
 | 2 | Argument, configuration, file, or credential operation error |
 | 130 | Canceled by the user |
 
-If the test notification fails after the wizard saves successfully, the command still ends as a successful save and clearly shows the test failure; the two are clearly distinguished. Canceling hook configuration after saving still returns 0 and keeps channels; a hook configuration error returns 1 and clearly states that channels were saved. Integration `status` returns 1 when entries are missing, duplicated, or hooks are disabled in the current user-level file. Internal hook handling commands always exit without blocking, with failures reported via stderr.
+If the test notification fails after the wizard saves successfully, the command still ends as a successful save and clearly shows the test failure; the two are clearly distinguished. Canceling hook configuration after saving still returns 0 and keeps channels; a hook configuration error returns 1 and clearly states that channels were saved. Integration `status` returns 1 when entries are missing, duplicated, or hooks are disabled in the current user-level file. Internal hook failures are reported via stderr with a non-blocking exit status for the host. This does not mean asynchronous or immediate completion: synchronous hooks awaiting remote answers still wait within their documented timeout.
 
 ## Development and verification
 
+Clone the [GitHub source repository](https://github.com/QueCue/dev-notify) and run these commands from its directory. npm restores pinned dependencies from the lockfile; no communication-library checkout is required:
+
 ```sh
 npm ci --ignore-scripts
+npm run build
+node dist/cli.js setup
+node dist/cli.js doctor
+node dist/cli.js send --title "Build complete" --content "Installer generated"
 npm test
 npm pack --dry-run
 ```
 
+For other CLI examples, replace `dev-notify` with `node dist/cli.js`; no global installation is required.
+
 `node-src/` is TypeScript source, `dist/` is compiled output, and `test-js/` is tests. Default tests use only fake credentials and mock backends/network; the local native fake-entry round-trip test requires explicitly setting `DEV_NOTIFY_NATIVE_TEST=1`, is enabled only on Windows, uses random IDs, and cleans up afterward.
 
-The npm publish whitelist contains only `dist/*.js`, README, SECURITY, CHANGELOG, LICENSE, and the required package.json; tests, configuration, and ciphertext are not included. There is no postinstall, auto-start, or self-written download script; prebuilt native dependencies are resolved by npm's platform optional packages, **do not use `--omit=optional`**. macOS x64/arm64 and Windows x64/arm64 prebuilt packages are provided by dependencies; providing packages does not mean this project has completed real-machine acceptance.
+For the current 0.2.2 source, the package whitelist includes only this application's compiled CLI JavaScript, README, SECURITY, CHANGELOG, LICENSE and package.json. Library copies, tests, real configuration, ciphertext and dependency tarballs are excluded. npm resolves runtime dependencies separately. Published package contents depend on the corresponding version. There is no postinstall, auto-start, or self-written download script; prebuilt native dependencies are resolved by npm's platform optional packages, **do not use `--omit=optional`**. macOS x64/arm64 and Windows x64/arm64 prebuilt packages are provided by dependencies; providing packages does not mean this project has completed real-machine acceptance.
 
-The local verification environment is Windows x64 with Node 24. Automated regression has 203 items: 202 passed, 0 failed, and 1 native credential test requiring explicit enablement was skipped. Coverage includes temporary hooks, reply/authorization/expiry/anti-replay, single-select/multi-select/custom, one-time permission JSON, two-sided races, feedback exceptions, and per-recipient duplicate reminder suppression. The actual CLI subprocess completes the loop of background start → PreToolUse registration → PermissionRequest → fake bot button → JSON answer → simulated PostToolUse → final feedback → notification deduplication/subsequent tool reminder → stop; this loop uses mock network and process metadata and cannot replace real-machine input verification. Separately, the user completed real-machine acceptance on Windows native Claude Code 2.1.316 with real Telegram for local-first, remote-first, multi-select, custom input, competing different answers, and delayed general reminder deduplication. Isolated compilation and tests do not cover the `dist` referenced by real hooks; automated tests for the Windows native input helper class only verify compilation/layout and do not perform a real Send. macOS's two terminal adapters have only simulation verification; macOS real-machine testing, the minimum Node version, version manager switching, tool permission answering on a real machine, and a full public release audit have not yet been accepted.
+See [CHANGELOG.en.md](CHANGELOG.en.md) for verification results of published versions. The regression record for this 0.2.2 source on Windows x64 with Node 24 is 219 tests: 218 passed, 0 failed, and 1 opt-in native credential test skipped. This record does not describe verification of the published npm package.
 
-Licensed under MIT, see [LICENSE](LICENSE). Security boundaries are in [SECURITY.en.md](SECURITY.en.md). Version updates must be published separately to npm; pushing to GitHub does not automatically update the npm package.
+Automated coverage includes temporary hooks, reply/authorization/expiry/anti-replay, single-select/multi-select/custom input, one-time permission JSON, two-sided races, feedback exceptions, and per-recipient duplicate reminder suppression. The actual CLI subprocess completes the loop of background start → PreToolUse registration → PermissionRequest → fake bot button → JSON answer → simulated PostToolUse → final feedback → notification deduplication/subsequent tool reminder → stop; this loop uses mock network and process metadata and cannot replace real-machine input verification. Automated tests for the Windows native input helper class only verify compilation/layout and do not perform a real Send.
+
+Real-machine acceptance is separate from automated results: question-answering acceptance on Windows native Claude Code 2.1.316 with real Telegram covers local-first, remote-first, multi-select, custom input, competing different answers, and delayed general reminder deduplication. Those question-answering tests do not verify terminal input injection for ordinary replies. Both macOS terminal adapters have only simulation verification; macOS real-machine testing, the minimum Node version, version manager switching, and tool permission answering on a real machine have not yet been accepted. This project has not completed a security audit.
+
+Licensed under MIT, see [LICENSE](LICENSE). Security boundaries are in [SECURITY.en.md](SECURITY.en.md). Source changes reach installed users only after a new npm release. Ordinary branch pushes do not publish; matching `v*` version tags trigger the repository's publishing workflow. Maintainers should see the [npm publishing guide](https://github.com/QueCue/dev-notify/blob/main/.github/NPM_PUBLISH.en.md).

@@ -54,6 +54,18 @@ export async function readJson(file: string): Promise<any | null> {
     throw new ConfigError(t('reply.readFailed'));
   }
 }
+// Windows 防病毒/索引程序可能短暂占用目标文件；只重试原子替换，不重做状态事务或业务操作。
+export async function replaceStateFile(source: string, target: string,
+  replace: typeof rename = rename, sleep: (ms: number) => Promise<unknown> = delay): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try { await replace(source, target); return; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '') || attempt >= 5) throw error;
+      await sleep(10 * 2 ** attempt);
+    }
+  }
+}
 export async function atomicJson(file: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = path.join(path.dirname(file), `.reply-${randomBytes(12).toString('hex')}.tmp`);
@@ -61,7 +73,7 @@ export async function atomicJson(file: string, value: unknown): Promise<void> {
   try {
     try { await handle.writeFile(JSON.stringify(value) + '\n', 'utf8'); await handle.sync(); }
     finally { await handle.close(); }
-    await rename(temporary, file);
+    await replaceStateFile(temporary, file);
   } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 export async function locked<T>(file: string, work: () => Promise<T>): Promise<T> {

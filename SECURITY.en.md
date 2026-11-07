@@ -2,7 +2,13 @@
 
 English | [简体中文](SECURITY.md)
 
-The current source is `0.1.3` and the npm package name is `@quecue/dev-notify`; the published version is authoritative on the npm registry, and source updates are not equivalent to a release. This project has not completed a security audit or real-machine acceptance on both platforms.
+The npm package name is `@quecue/dev-notify`, with public source at [QueCue/dev-notify](https://github.com/QueCue/dev-notify). Published versions are authoritative on the npm registry; this document describes the 0.2.2 source, and a source version alone does not establish that an installation package has been published. This project has not completed a security audit or real-machine acceptance on both platforms.
+
+## Communication dependency in 0.2.2 source
+
+The current 0.2.2 source uses the standard npm runtime dependency `@quecue/notify-core`, pinned to exactly `0.1.0`, with source at [QueCue/notify-core](https://github.com/QueCue/notify-core). Builds do not embed the library or link sibling source; npm installs it automatically. This does not describe the published `0.2.1` package. The library's `0.1.0` release was published through its own GitHub Actions OIDC identity; the lockfile pins the official registry source and SHA512. Neither provenance nor integrity verification constitutes a security audit.
+
+Reusing a dependency does not automatically share credentials or authorization, and a bot's `getUpdates` must still have only one consumer. Upgrade dependencies only from trusted sources; tarball integrity checks in the lockfile do not establish source authenticity or constitute a security audit.
 
 ## Credentials and permissions
 
@@ -66,13 +72,15 @@ The current source is `0.1.3` and the npm package name is `@quecue/dev-notify`; 
 ## npm and testing
 
 - Runtime has a native credential dependency, with the version and platform optional packages pinned in `package-lock.json`. Keep optional dependencies. There is no postinstall, self-written binary download, or background startup script.
-- The npm whitelist contains only compiled JS, README, SECURITY, CHANGELOG, LICENSE, and package.json. Tests, configuration, logs, and ciphertext do not enter this package.
-- Third-party native packages carry their own licenses and Rust dependency declarations; dependency supply chain and licenses still need review before public release; pinned versions are not equivalent to a completed audit.
+- For the current 0.2.2 source, the npm whitelist includes only this application's compiled CLI JS, README, SECURITY, CHANGELOG, LICENSE and package.json. Library copies, tests, real configuration, logs, ciphertext and dependency tarballs are excluded. Published versions are governed by their actual package contents.
+- Third-party native packages carry their own licenses and Rust dependency declarations. Check the supply chain and licenses for releases and dependency upgrades; pinned versions are not equivalent to a completed audit.
 - Default tests use fake credentials, temporary directories, and mock system backends/network. `DEV_NOTIFY_NATIVE_TEST=1` explicitly enables Windows native tests, creates only fake entries with random IDs for this run, cleans up afterward, and does not read the user's existing entries.
 - npm uninstall does not automatically delete user configuration or credentials. To clean up, first run the interactive cleanup command; uninstall lifecycle scripts will not secretly manipulate the user's system storage.
 
-## Public release
+## Release security and vulnerability reporting
 
-Verify the package name, source ownership, and dependency licenses; scan the full directory, the actual npm package, and Git history. Once a key leaks, it must be revoked and rotated; deleting files cannot undo a leak that has already occurred. A private vulnerability reporting channel should be set up before a public release; there is currently no public security contact address.
+The project is public; see [CHANGELOG.en.md](CHANGELOG.en.md) for release history and the npm registry for published versions. Releases and dependency upgrades still require checking the package name, source ownership, and dependency licenses, and checking source, actual npm packages, and Git history for secrets. Once a key leaks, revoke and rotate it; deleting files cannot undo a leak. This project has not completed a security audit.
 
-Windows x64 / Node 24 has had isolated tests and a real CLI fake-network loop; the Windows native input helper class in automation only does compilation/layout verification and does not inject into real Claude sessions. The user separately completed real-machine acceptance on Claude Code 2.1.316 with real Telegram for PC/remote priority, single-select/multi-select/custom, competing different answers, and duplicate reminder deduplication; that question-answering path does not involve terminal input injection. Tool permission answering on a real machine, macOS terminal input and the system permission flow, other architectures, and the minimum Node version have not been verified, so comprehensive compatibility is not claimed.
+There is currently no public security contact email. If GitHub private vulnerability reporting is enabled for the repository, submit privately through its [Security page](https://github.com/QueCue/dev-notify/security). Otherwise, use [Issues](https://github.com/QueCue/dev-notify/issues) only to ask for a private contact method, without publishing vulnerability details, credentials, or sensitive logs.
+
+Windows x64 / Node 24 has had isolated tests and a real CLI fake-network loop; the Windows native input helper class in automation only verifies compilation/layout and does not inject into real Claude sessions. Question-answering acceptance on Claude Code 2.1.316 with real Telegram covers local/remote priority, single-select/multi-select/custom input, competing different answers, and duplicate reminder deduplication; that path does not involve terminal input injection. Tool permission answering on a real machine, macOS terminal input and the system permission flow, other architectures, and the minimum Node version have not been verified, so comprehensive compatibility is not claimed.

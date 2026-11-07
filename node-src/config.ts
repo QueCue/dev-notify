@@ -4,8 +4,9 @@ import path from 'node:path';
 import { resolveReference, type Bundle, type Reference } from './credentials.js';
 import { getLocale, t, type Locale } from './i18n.js';
 
+import { NotifyError as ConfigError } from '@quecue/notify-core';
+export { ConfigError };
 export type Env = Record<string, string | undefined>;
-export class ConfigError extends Error {}
 export interface NotificationSettings {
   events: { stop: boolean; waiting: boolean };
   projects: { allow: string[]; deny: string[] };

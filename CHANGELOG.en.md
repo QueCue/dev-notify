@@ -2,6 +2,16 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.2 — 2026-11-07
+
+Communication dependency extraction, Windows file-replacement fixes, and documentation updates. Actual version availability is authoritative on the npm registry; the changes below are not included in `0.2.1`.
+
+- Extract Telegram/Feishu communication into the standard npm runtime dependency `@quecue/notify-core@0.1.0`, with source at [QueCue/notify-core](https://github.com/QueCue/notify-core). Do not embed the library or link sibling source; npm users do not install this dependency manually. The CLI entry point, languages, and reply button protocol remain compatible. The library's `0.1.0` has been published through GitHub Actions, and this application's lockfile now pins the official registry source and matching SHA512.
+- When a Windows state file is temporarily busy, retry only the same atomic replacement without repeating message or input operations.
+- Update Chinese and English installation, dependency, credential cleanup, and security boundary documentation to distinguish published packages from unreleased source.
+- Share package-file verification between local maintainer checks and CI, covering application runtime, the standard communication dependency declaration and public documentation; remove the obsolete alpha default from the manual publishing form.
+- Regression results for this source revision: 219 tests, 218 passed, 0 failed, and 1 opt-in native credential test skipped. These results do not establish real-machine acceptance on each platform.
+
 ## 0.2.1 — 2026-11-04
 
 ### Fixed

@@ -2,63 +2,72 @@
 
 English | [简体中文](NPM_PUBLISH.md)
 
-Workflow: `.github/workflows/publish-npm.yml`, displayed as **Publish npm** on the GitHub Actions page.
+Maintainer instructions for [QueCue/dev-notify](https://github.com/QueCue/dev-notify), workflow `.github/workflows/publish-npm.yml`, displayed as **Publish npm**. npm users do not need publishing permissions.
 
-Uses npm Trusted Publishing (OIDC), with no `NPM_TOKEN`, `NODE_AUTH_TOKEN`, password, or OTP secret configured. The workflow runs on GitHub-hosted runners with fixed Node.js 24 and npm 11.21.0; only the publish job has `id-token: write`, while the test job does not.
+`@quecue/dev-notify` already has multiple releases. See the [CHANGELOG](../CHANGELOG.en.md) for version changes; branch changes and version headings alone do not establish publication. Never overwrite an existing npm version with different content. Query actual state with:
 
-## One-time npm setup
+```sh
+npm view @quecue/dev-notify dist-tags versions --json --registry=https://registry.npmjs.org/
+```
 
-A package maintainer logs in to npm, opens the package settings for `@quecue/dev-notify`, selects **GitHub Actions** under **Trusted Publisher**, and fills in:
+## Trusted Publisher configuration
+
+Do not delete/recreate a working publisher merely because this document changed. When configuring or repairing it, select GitHub Actions in npm package settings:
 
 | Field | Value |
 | --- | --- |
 | GitHub user/organization | `QueCue` |
 | Repository | `dev-notify` |
-| Workflow filename | `publish-npm.yml` |
-| GitHub environment | Leave empty; the current workflow does not configure an environment |
+| Workflow filename | `publish-npm.yml`, without directories |
+| GitHub environment | Empty; no environment is specified by the workflow |
 
-Fields are case-sensitive; the workflow field takes only the filename, not the `.github/workflows/` path.
+The workflow uses GitHub-hosted runners and OIDC, not repository-stored npm tokens, passwords, OTPs or long-lived authentication secrets. Only the publish job has `id-token: write`. Node.js 24 and npm 11.21.0 are pinned workflow choices, not minimum versions for all package users.
 
-Allow this trusted publisher to execute `npm publish` directly, and enable **Allow npm dist-tag**. Direct publish permission is not tag management permission; without the latter, the version may be published but tag updates such as `latest` fail. Saving the configuration does not necessarily validate the fields; under current npm rules, a new trusted publishing configuration must complete its first successful publish within two days of creation, otherwise it must be recreated.
+Publishing and **Allow npm dist-tag** are separate permissions; this workflow needs tag management for verification/correction. npm currently requires newly created publisher configurations to complete a successful first publish within two days to bind repository identity; this does not mean an already-bound publisher expires after two days. Account verification, available controls and current rules are governed by [npm's documentation](https://docs.npmjs.com/trusted-publishers). Complete browser second-factor checks personally; do not store authentication material in the repository.
 
-If npm requires browser-based Windows Hello, passkey, or other account second-factor authentication, the maintainer completes it on the web page. Do not put authentication material into the repository or chat.
+Supported OIDC publishing of a public package from a public GitHub repository can generate provenance. It is not a security audit, and local YAML checks do not verify that account-side publishing identity is configured correctly.
 
-## First publish of the existing alpha.3 tag
+## Normal new releases
 
-`v0.1.0-alpha.3` has already been pushed; the new workflow will not retroactively trigger for old tags, and old tags should not be deleted or re-tagged.
+1. Run `npm ci --ignore-scripts` and `npm test` in this repository. Review release notes and both language versions.
+2. Select an unpublished version and update package.json, package-lock, `VERSION` in `node-src/cli.ts`, and CHANGELOG together. The communication extraction is being prepared as `0.2.2`; never overwrite the existing `0.2.1` or another historical version.
+3. Include source, exact runtime dependency declarations, the registry lockfile and build/release scripts in the versioned commit. Library source: [QueCue/notify-core](https://github.com/QueCue/notify-core). First confirm `@quecue/notify-core@0.1.0` is available on npm, then generate and verify the lockfile. CI installs through npm without reading a sibling checkout or vendor tarball.
+4. Generate and verify the candidate locally:
 
-1. Commit the workflow to the GitHub default branch.
-2. Open the repository's **Actions → Publish npm → Run workflow**.
-3. Select the `main` branch containing this workflow and enter `v0.1.0-alpha.3` for `tag`.
-4. This run has confirmed updating both `alpha` and `latest`, so check **update_latest**.
-5. Run the job. The job reports publish complete only if regression tests, the pack whitelist, remote tarball integrity, and target tags all verify successfully.
+   ```sh
+   node -e "require('node:fs').mkdirSync('build/release-check', {recursive: true})"
+   npm pack --ignore-scripts --json --pack-destination build/release-check > build/release-check/pack.json
+   node scripts/verify-package.mjs build/release-check/pack.json build/release-check
+   ```
 
-A manual run builds the workflow run's commit rather than secretly checking out another commit; this makes the automated provenance correspond to the actual build commit. You can add or modify `.github/` configuration and `test-js/` tests that do not enter the npm package; all other release source must be identical to the existing version tag, and the workflow enforces a diff gate. Tests must still all pass; they are not skipped because test fixes are allowed. If `main` already contains other source or documentation changes, the job will refuse to publish with the old version tag, and a new version and tag must be prepared first.
+   `--ignore-scripts` is appropriate here because `npm test` already built the source. It does not refresh stale dist on its own.
+5. After explicit confirmation, commit the version and create/push the exact matching `v<version>` tag. Ordinary branch pushes do not publish.
 
-## Subsequent releases
+Tag mappings: stable `vX.Y.Z` → `latest`, `vX.Y.Z-alpha.N` → `alpha`, `beta.N` → `beta`, `rc.N` → `rc`. These are placeholders, not literal tag names.
 
-After completing the version update and regression, commit `package.json`, `package-lock.json`, and the release notes, then create and push a `v*` tag that exactly matches the version:
+Prereleases do not update `latest` by default. Manually enabling `update_latest` points default tagless installs at the selected version, possibly an older one. Use it only intentionally after checking the effect, not automatically for a first-time configuration.
 
-- `v0.1.0-alpha.4` → npm `alpha`.
-- `v0.1.0-beta.1` → npm `beta`.
-- `v0.1.0-rc.1` → npm `rc`.
-- `v0.1.0` → npm `latest`.
+## Manual runs and verification reruns
 
-Only official versions or `alpha.N`, `beta.N`, and `rc.N` are supported here. Pushing a normal branch does not publish automatically. A prerelease does not overwrite `latest` by default; only a maintainer manually running the workflow and explicitly checking `update_latest` updates it additionally. This operation changes the default version for tagless installs and should be used with caution.
+Select a branch containing the workflow in Actions → Publish npm → Run workflow, and enter an **existing tag matching that run's source and package.json**. No old alpha tag is selected by default.
+
+A manual run builds its actual workflow commit; it does not silently check out the entered tag. Only non-package changes under `.github/` and `test-js/` may differ from that tag. Other source, scripts, dependency declarations, lockfiles and documents must match. A branch with other changes must prepare a new version; never delete or retag a historical release.
+
+The workflow checks version identity, restores dependencies, tests, verifies compiled file inventory/SHA512, then transfers the same verified tarball to the publishing job. `scripts/verify-package.mjs` is shared by local verification and CI and checks the CLI file inventory and the exact communication runtime dependency in the archive metadata. Do not permit arbitrary dist files to bypass this check.
 
 ## Failures and reruns
 
-- Version tag mismatch, source mismatch with the tag, build/test failure, or an abnormal package whitelist: fail before publishing and do not upload to npm.
-- OIDC/permission configuration errors: check the npm repository case, workflow filename, direct publish permission, and tag management permission; do not add a token workaround.
-- npm query network error: do not treat it as the version not existing, and do not publish blindly.
-- Publish process failure or unknown result: do not automatically resend; rerun the workflow after verifying the status.
-- After npm returns acceptance, not all registry read nodes are immediately visible; version integrity switches to direct registry version endpoint queries with a cache-buster, waiting up to about 10 minutes, and tag visibility waits up to about 1 minute. Timeouts clearly distinguish "publish accepted" from "not yet verified/tag updated", without claiming the version was not published or automatically resending.
-- Version already exists: skip the duplicate publish only if the remote SHA-512 exactly matches this verified package, and continue verifying/completing the target tags; different content must use a new version number and cannot overwrite a version.
-- Linux CI is not real-machine acceptance on Windows/macOS; platform-specific tests may be skipped. Previous Windows two-sided question-answering acceptance records are in CHANGELOG.en.md.
+- Tag/source mismatch, failed tests, unexpected package files or integrity mismatch stop before publishing.
+- For OIDC/permission problems, check repository case, workflow name, direct publish and tag permissions instead of adding a long-lived token workaround.
+- A query failure does not mean the version is absent. An unknown publish result must not trigger a blind resend.
+- Registry reads may lag after npm acceptance. The workflow performs up to about 10 minutes of read-only version-integrity checks and about 1 minute of tag checks. A timeout can mean publication succeeded but verification did not finish.
+- Existing versions are reused only if their remote SHA512 equals this tarball, after which tags are verified. Different content requires a new version, never an overwrite.
+- Linux CI is not Windows/macOS real-machine acceptance; platform-specific tests may be skipped. See CHANGELOG and SECURITY for scope.
 
-Actual publish records are authoritative via Actions logs, step summaries, and the npm registry. Configuration files passing local checks does not mean GitHub OIDC publishing has been accepted.
+Actions summaries and the registry's target version, integrity and dist-tags are authoritative. This document and local tests do not push tags or publish on the maintainer's behalf.
 
-## Official documentation
+## Official references
 
-- https://docs.npmjs.com/trusted-publishers
-- https://docs.npmjs.com/generating-provenance-statements
+- [Trusted Publishing](https://docs.npmjs.com/trusted-publishers)
+- [Provenance](https://docs.npmjs.com/generating-provenance-statements)
+- [npm publish](https://docs.npmjs.com/cli/v11/commands/npm-publish)

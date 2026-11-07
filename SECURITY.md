@@ -2,7 +2,13 @@
 
 简体中文 | [English](SECURITY.en.md)
 
-当前源码为 `0.1.3`，npm 包名为 `@quecue/dev-notify`；发布版本以 npm registry 为准，源码更新不等同于已发布。本项目尚未完成安全审计或双平台实机验收。
+npm 包名为 `@quecue/dev-notify`，公开源码见 [QueCue/dev-notify](https://github.com/QueCue/dev-notify)。发布版本以 npm registry 为准，本文描述 0.2.2 源码，不能仅依据源码版本认定安装包已发布。本项目尚未完成安全审计或双平台实机验收。
+
+## 0.2.2 源码的通讯层依赖
+
+当前 0.2.2 源码使用标准 npm 运行时依赖 `@quecue/notify-core`，精确版本 `0.1.0`，源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。构建不嵌入通讯库、不链接兄弟仓库源码，npm 自动安装该依赖；这不是已发布 `0.2.1` 的结构说明。通讯库 `0.1.0` 已通过独立 GitHub Actions OIDC 发行，锁文件固定正式 registry 来源和 SHA512；包的 provenance 或完整性校验均不等于安全审计。
+
+依赖复用不会自动共享凭据或授权，同一个 Bot 的 `getUpdates` 仍只能由一个消费者使用。依赖只从可信来源升级；锁文件的 tarball integrity 校验不等于来源认证或安全审计。
 
 ## 凭据与权限
 
@@ -66,13 +72,15 @@
 ## npm 与测试
 
 - 运行时有原生凭据依赖，版本和平台 optional 包锁定于 `package-lock.json`。请保留 optional 依赖。项目没有 postinstall、自写二进制下载或后台启动脚本。
-- npm 白名单仅包含编译后的 JS、README、SECURITY、CHANGELOG、LICENSE 和 package.json。测试、配置、日志、密文不会进入本包。
-- 第三方原生包带有其许可证与 Rust 依赖声明，公开前仍需审查依赖供应链和许可；固定版本并不等同于完成审计。
+- 当前 0.2.2 源码的 npm 白名单仅包含本应用 CLI 编译 JS、README、SECURITY、CHANGELOG、LICENSE 和 package.json。通讯库副本、测试、真实配置、日志、密文及依赖 tarball 不进入发布包；已发布版本以实际包内容为准。
+- 第三方原生包带有其许可证与 Rust 依赖声明。发布及依赖升级时应核对供应链和许可；固定版本并不等同于完成审计。
 - 默认测试使用假凭据、临时目录和模拟系统后端、网络。`DEV_NOTIFY_NATIVE_TEST=1` 会显式开启 Windows 原生测试，只创建本次随机 ID 的假条目，结束后清理，不读取用户现有条目。
 - npm 卸载不会自动删除用户配置或凭据。需要清理时，请先运行交互清理命令；卸载生命周期脚本不会偷偷操作用户的系统存储。
 
-## 公开发布
+## 发布安全与漏洞报告
 
-核对包名、源码权属、依赖许可；扫描完整目录、实际 npm 包和 Git 历史。密钥一旦泄漏，必须撤销并轮换；删除文件无法撤销已经发生的泄漏。正式公开前应设置私密漏洞报告渠道；当前还没有公开安全联络地址。
+项目已公开，发布记录见 [CHANGELOG.md](CHANGELOG.md)，公开版本以 npm registry 为准。发布及依赖升级仍需核对包名、源码权属和依赖许可，检查源码、实际 npm 包与 Git 历史是否包含秘密。密钥一旦泄漏，必须撤销并轮换；删除文件无法撤销已经发生的泄漏。本项目尚未完成安全审计。
 
-Windows x64 / Node 24 已做隔离测试及真实 CLI 假网络闭环；自动化中的 Windows 原生输入帮助类只做编译/布局验证，不会向真实 Claude 会话注入。用户另在 Claude Code 2.1.316 与真实 Telegram 完成了 PC/远端优先、单选/多选/自定义、不同答案竞争及重复提醒去重的实机验收；该问答路径不涉及终端输入注入。工具权限应答实机、macOS 终端输入与系统权限流程、其他架构及 Node 最低版本尚未验证，因此不宣称全面兼容。
+目前没有公开安全联络邮箱。如仓库已启用 GitHub 私密漏洞报告，请通过 [Security 页面](https://github.com/QueCue/dev-notify/security)私密提交；否则可先在 [Issues](https://github.com/QueCue/dev-notify/issues) 中仅询问私密联系方式，不要公开漏洞细节、凭据或敏感日志。
+
+Windows x64 / Node 24 已做隔离测试及真实 CLI 假网络闭环；自动化中的 Windows 原生输入帮助类只做编译/布局验证，不会向真实 Claude 会话注入。Claude Code 2.1.316 与真实 Telegram 的问答实机验收覆盖本机/远端优先、单选/多选/自定义、不同答案竞争及重复提醒去重；该问答路径不涉及终端输入注入。工具权限应答实机、macOS 终端输入与系统权限流程、其他架构及 Node 最低版本尚未验证，因此不宣称全面兼容。

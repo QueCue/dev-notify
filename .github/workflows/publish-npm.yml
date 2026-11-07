@@ -7,12 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '已存在的版本标签，例如 v0.1.0-alpha.3'
+        description: '与本次源码及 package.json 完全匹配的已存在版本标签'
         required: true
         type: string
-        default: 'v0.1.0-alpha.3'
       update_latest:
-        description: '预发布版本同时更新 latest（首次 alpha.3 发布时勾选）'
+        description: '同时将 latest 指向本次版本（仅明确需要时勾选）'
         required: true
         type: boolean
         default: false
@@ -84,23 +83,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/npm-package"
           npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/npm-package" > "$RUNNER_TEMP/npm-pack.json"
-          node --input-type=module <<'NODE'
-          import { readFileSync, readdirSync, appendFileSync } from 'node:fs';
-          import { createHash } from 'node:crypto';
-          import path from 'node:path';
-          const [pack] = JSON.parse(readFileSync(path.join(process.env.RUNNER_TEMP, 'npm-pack.json'), 'utf8'));
-          const allowed = /^(?:dist\/[^/]+\.js|package\.json|README\.md|README\.en\.md|SECURITY\.md|SECURITY\.en\.md|CHANGELOG\.md|CHANGELOG\.en\.md|LICENSE)$/;
-          if (!pack || path.basename(pack.filename) !== pack.filename || !pack.filename.endsWith('.tgz') || pack.files.some(f => !allowed.test(f.path))) {
-            throw new Error('发布压缩包包含白名单以外文件或非法路径。');
-          }
-          const expected = readdirSync('node-src').filter(n => n.endsWith('.ts')).map(n => 'dist/' + n.replace(/\.ts$/, '.js')).sort();
-          const actual = pack.files.map(f => f.path).filter(n => n.startsWith('dist/')).sort();
-          if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error('编译文件清单与源码不一致。');
-          const bytes = readFileSync(path.join(process.env.RUNNER_TEMP, 'npm-package', pack.filename));
-          const integrity = 'sha512-' + createHash('sha512').update(bytes).digest('base64');
-          if (integrity !== pack.integrity) throw new Error('压缩包完整性不一致。');
-          appendFileSync(process.env.GITHUB_OUTPUT, `filename=${pack.filename}\nintegrity=${integrity}\n`);
-          NODE
+          node scripts/verify-package.mjs "$RUNNER_TEMP/npm-pack.json" "$RUNNER_TEMP/npm-package"
 
       - name: 保存已验证的发布包
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

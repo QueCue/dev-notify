@@ -1,17 +1,21 @@
+import { createTelegramApi, TelegramApiError } from '@quecue/notify-core';
 import { requestJson, type Request } from './channels.js';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
 
 export type TelegramApi = (method: string, payload: Record<string, unknown>) => Promise<any>;
 export function telegramApi(token: string, request: Request = requestJson): TelegramApi {
+  const call = createTelegramApi(token, { request });
   return async (method, payload) => {
     if (!['sendMessage', 'editMessageReplyMarkup', 'answerCallbackQuery', 'getMe', 'getUpdates', 'getWebhookInfo'].includes(method)) throw new ConfigError(t('reply.telegramMethod'));
-    const response = await request(`https://api.telegram.org/bot${token}/${method}`, payload);
-    if (response.ok !== true) {
-      if (response.error_code === 409) throw new ConfigError(t('reply.telegramConflict'));
-      throw new ConfigError(t('reply.telegramRequestFailed'));
+    try { return await call(method, payload); }
+    catch (error) {
+      if (error instanceof TelegramApiError) {
+        if (error.code === 409) throw new ConfigError(t('reply.telegramConflict'));
+        throw new ConfigError(t('reply.telegramRequestFailed'));
+      }
+      throw error;
     }
-    return response.result;
   };
 }
 export async function replyHint(api: TelegramApi, chat: string, title: string, content: string, replyTo?: number, markup?: unknown): Promise<any> {

@@ -2,63 +2,72 @@
 
 简体中文 | [English](NPM_PUBLISH.en.md)
 
-工作流：`.github/workflows/publish-npm.yml`，GitHub Actions 页面显示为 **Publish npm**。
+适用于 [QueCue/dev-notify](https://github.com/QueCue/dev-notify) 的 `.github/workflows/publish-npm.yml`，Actions 名称为 **Publish npm**。这是维护者流程，普通 npm 用户无需配置发布权限。
 
-使用 npm Trusted Publishing（OIDC），不配置 `NPM_TOKEN`、`NODE_AUTH_TOKEN`、密码或 OTP secret。工作流由 GitHub 托管 runner 执行，固定 Node.js 24 与 npm 11.21.0；只有发布任务有 `id-token: write`，测试任务没有该权限。
+`@quecue/dev-notify` 已有多个发行版。版本变更见 [CHANGELOG](../CHANGELOG.md)；不要把分支修改当作已经发布，更不能以内容不同的相同版本覆盖 npm。查询实际状态：
 
-## 一次性 npm 设置
+```sh
+npm view @quecue/dev-notify dist-tags versions --json --registry=https://registry.npmjs.org/
+```
 
-由包维护者登录 npm，打开 `@quecue/dev-notify` 的包设置，在 **Trusted Publisher** 中选择 **GitHub Actions**，填写：
+## Trusted Publisher 配置
+
+已有正常工作的可信发布配置无需因阅读本文而删除重建。需要首次配置或修复时，由维护者在 npm 的包设置选择 GitHub Actions：
 
 | 字段 | 值 |
 | --- | --- |
-| GitHub 用户/组织 | `QueCue` |
+| GitHub 用户／组织 | `QueCue` |
 | 仓库 | `dev-notify` |
-| Workflow filename | `publish-npm.yml` |
-| GitHub environment | 留空，当前工作流没有配置 environment |
+| Workflow filename | `publish-npm.yml`，不含目录 |
+| GitHub environment | 留空，工作流未指定 environment |
 
-字段区分大小写，工作流字段只填文件名，不填 `.github/workflows/` 路径。
+本流程使用 GitHub 托管 runner 和 OIDC，不向仓库存储 `NPM_TOKEN`、密码、OTP 或长期认证 secret。只在发布任务授予 `id-token: write`；固定 Node.js 24 和 npm 11.21.0。此固定版本是工作流选择，不等于所有 npm 用户的最低版本。
 
-允许该可信发布者直接执行 `npm publish`，同时启用 **Allow npm dist-tag**。直接发布权限不等于标签管理权限；缺少后者时，版本可能已发布，但 `latest` 等标签更新会失败。配置保存时不一定验证字段是否正确；按 npm 当前规则，新的可信发布配置须在创建后的两天内完成首次成功发布，超时需要重新创建配置。
+发布权限与 **Allow npm dist-tag** 权限独立；本工作流需要后者核对／修正目标标签。npm 官方目前要求新建可信配置在两天内成功首次发布以完成身份绑定；已绑定配置不应当作两天后就失效。账户验证、实际可用选项和规则以 [npm 官方说明](https://docs.npmjs.com/trusted-publishers) 为准。浏览器二次认证由维护者本人完成，不将认证材料写入仓库。
 
-如果 npm 要求浏览器进行 Windows Hello、通行密钥或其他账户二次认证，由维护者在网页中完成。不要把认证材料放入仓库或聊天。
+公开包从公开 GitHub 仓库使用受支持的 OIDC 流程发布时可生成 provenance；这不代表包已经安全审计，也不能仅从本地 YAML 检查证明发布身份配置成功。
 
-## 首次发布已有的 alpha.3 标签
+## 常规新版本
 
-`v0.1.0-alpha.3` 已经推送，新增工作流不会追溯触发旧标签，也不应删除/重打标签。
+1. 在本仓库执行 `npm ci --ignore-scripts`、`npm test`，并检查变更记录和中英文说明。
+2. 选择未发布的新版本，同步更新 package.json／package-lock、`node-src/cli.ts` 的 `VERSION` 和 CHANGELOG。通讯层提取的发行准备版本为 `0.2.2`；不能覆盖已有的 `0.2.1` 或其他历史版本。
+3. 将源码、精确运行时依赖声明、registry 锁文件和发布所需脚本纳入同一版本提交。通讯库源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。先确认 `@quecue/notify-core@0.1.0` 已在 npm 可用，再生成并核验锁文件；CI 通过 npm 安装，不读取兄弟仓库或 vendor tarball。
+4. 在本地生成并校验候选包：
 
-1. 将工作流提交到 GitHub 默认分支。
-2. 打开仓库 **Actions → Publish npm → Run workflow**。
-3. 选择包含此工作流的 `main` 分支，`tag` 填 `v0.1.0-alpha.3`。
-4. 本次已确认同时更新 `alpha` 和 `latest`，因此勾选 **update_latest**。
-5. 运行任务。只有回归、打包白名单、远端压缩包完整性和目标标签均核验成功，任务才显示发布完成。
+   ```sh
+   node -e "require('node:fs').mkdirSync('build/release-check', {recursive: true})"
+   npm pack --ignore-scripts --json --pack-destination build/release-check > build/release-check/pack.json
+   node scripts/verify-package.mjs build/release-check/pack.json build/release-check
+   ```
 
-手动运行构建的是该工作流运行提交，不是悄悄 checkout 另一提交；这使自动来源证明对应实际构建提交。可以新增/修改不进入 npm 包的 `.github/` 配置和 `test-js/` 测试，其余所有发布源码必须与既有版本标签相同，工作流会执行差异门禁。测试仍必须全部通过，不因允许测试修正而跳过。若 `main` 已有其他源码或文档修改，任务将拒绝用旧版本标签发布，须先准备新版本和新标签。
+   此处 `--ignore-scripts` 是因为前一步 `npm test` 已完成构建；直接使用它不会自动更新陈旧 dist。
+5. 维护者确认后提交版本，并创建、推送与 package.json 完全匹配的 `v<版本>` 标签。普通分支推送不触发发布。
 
-## 后续发布
+映射规则：正式 `vX.Y.Z` → `latest`；`vX.Y.Z-alpha.N` → `alpha`；`beta.N` → `beta`；`rc.N` → `rc`。这里只接受这些格式，文中的占位符不是可以原样执行的标签。
 
-完成版本更新与回归，将 `package.json`、`package-lock.json` 和更新说明提交后，创建并推送与版本完全一致的 `v*` 标签：
+预发布默认不更新 `latest`。手动勾选 `update_latest` 会额外将无标签安装的默认版本指向本次版本，可能包括较旧版本；仅在明确需要且已核实影响时使用，不因首次配置就默认勾选。
 
-- `v0.1.0-alpha.4` → npm `alpha`。
-- `v0.1.0-beta.1` → npm `beta`。
-- `v0.1.0-rc.1` → npm `rc`。
-- `v0.1.0` → npm `latest`。
+## 手动运行或核验重跑
 
-这里只支持正式版本或 `alpha.N`、`beta.N`、`rc.N`。推普通分支不会自动发布。预发布不会默认覆盖 `latest`；只有维护者手动运行并显式勾选 `update_latest` 才会额外更新它。该操作会改变无标签安装的默认版本，应谨慎使用。
+在 Actions → Publish npm → Run workflow 选择含工作流的分支，填写**与该次运行源码和 package.json 一致的已存在标签**。不再默认填旧 alpha 标签。
 
-## 失败与重跑
+手动任务构建的是工作流运行提交，而非静默切换到输入标签。与标签相比，仅允许 `.github/` 和 `test-js/` 的非包内容修正；其余源码、脚本、依赖声明、锁文件和文档须与标签一致。若当前分支已有其他变更，使用旧标签会被拒绝，应准备新版本，不能删除或重打历史标签。
 
-- 版本标签与包版本不符、源码与标签不符、编译/测试失败或包白名单异常：发布前失败，不上传 npm。
-- OIDC/权限配置错误：检查 npm 的仓库大小写、工作流文件名、直接发布权限和标签管理权限，不添加 token 绕过。
-- npm 查询网络错误：不当作版本不存在，不盲目发布。
-- 发布过程失败或结果未知：不自动重发；核验状态后可重新运行工作流。
-- npm 返回接受发布后，不等于所有 registry 读取节点立即可见；版本完整性改为直连 registry 版本端点并带 cache-buster 查询，等待最多约 10 分钟，标签可见性再等待最多约 1 分钟。超时明确区分「已接受发布」与「尚未核验/更新标签」，不声称未发布，也不自动重发。
-- 版本已存在：只有远端 SHA-512 与本次已验证包完全一致才跳过重复发布，并继续核验/补全目标标签；不同内容必须使用新版本号，不能覆盖版本。
-- Linux CI 不等于 Windows/macOS 实机验收；平台专属测试可能跳过。此前 Windows 双端答题验收记录见 CHANGELOG.md。
+整个流程依次进行版本门禁、依赖还原、测试、构建文件清单和 SHA512 校验，随后上传同一个已验证 tarball，再由独立任务发布。`scripts/verify-package.mjs` 同时用于本地和 CI，校验 CLI 文件清单及归档中精确的通讯运行时依赖声明；不能为了通过检查而放开任意 dist 文件。
 
-实际发布记录以 Actions 日志、步骤摘要和 npm registry 为准。配置文件通过本地检查不等于 GitHub OIDC 发布已验收。
+## 失败与重跑边界
 
-## 官方文档
+- 标签／源码不符、测试失败、文件清单异常或包完整性不符：发布前停止。
+- OIDC／权限错误：核对仓库大小写、工作流名、直接发布及标签权限，不用新增长期 Token 绕过配置错误。
+- 查询失败：不当作版本不存在。发布失败或结果未知：不盲目重发。
+- npm 接受上传后，版本端点可能延迟可见；工作流最多约 10 分钟只读核验版本完整性，再最多约 1 分钟核对标签。超时可能是已发布但未完成核验，不代表上传失败。
+- 相同版本只有远端 SHA512 与本次 tarball 一致时才跳过重复发布并继续核验标签；内容不同必须使用新版本，不能覆盖。
+- Linux CI 不代表 Windows／macOS 实机验收，平台特定测试可能跳过。结果范围见 CHANGELOG 与 SECURITY。
 
-- https://docs.npmjs.com/trusted-publishers
-- https://docs.npmjs.com/generating-provenance-statements
+是否发布成功以 Actions 摘要及 npm registry 的目标版本、integrity 和 dist-tags 为准。本文和本地测试不会替维护者执行推送或发布。
+
+## 官方参考
+
+- [Trusted Publishing](https://docs.npmjs.com/trusted-publishers)
+- [Provenance](https://docs.npmjs.com/generating-provenance-statements)
+- [npm publish](https://docs.npmjs.com/cli/v11/commands/npm-publish)

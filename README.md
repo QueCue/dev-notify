@@ -2,9 +2,15 @@
 
 简体中文 | [English](README.en.md)
 
-跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code、Unity 或项目目录。
+跨平台开发任务通知工具，使用 **TypeScript / Node.js**，通过 npm 分发，不需要独立可执行文件或其他脚本运行时。通用通知不依赖 Claude Code 或项目目录。
 
-**npm 包名为 `@quecue/dev-notify`。`0.1.3` 提供 Claude Code 回复、原生 PC 与 Telegram 双端答题及结果反馈。** 版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本以 npm registry 为准。
+**npm 包名为 `@quecue/dev-notify`，支持通用通知、Claude Code 远程回复，以及本机与 Telegram 双端答题和结果反馈。** 源码仓库：[QueCue/dev-notify](https://github.com/QueCue/dev-notify)。版本变更与升级说明见 [CHANGELOG.md](CHANGELOG.md)；公开版本和发布标签以 npm registry 为准，源码更新不等同于已发布。
+
+### 0.2.2 源码的通讯层依赖
+
+当前 0.2.2 源码将 Telegram／飞书通讯层提取为标准 npm 运行时依赖 `@quecue/notify-core`，精确版本为 `0.1.0`，源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。此结构不代表已发布的 `0.2.1` 包。
+
+依赖由 npm 安装，构建只编译本应用，不复制通讯库或链接兄弟仓库源码。npm 用户无需手动安装通讯库。`@quecue/notify-core@0.1.0` 已通过 GitHub Actions 发布，锁文件固定其 registry 来源和 integrity；源码开发使用 `npm ci --ignore-scripts` 还原依赖。
 
 ## 安装与使用
 
@@ -13,6 +19,7 @@
 从 npm 安装：
 
 ```sh
+npm view @quecue/dev-notify dist-tags
 npm install -g @quecue/dev-notify
 dev-notify --version
 dev-notify setup
@@ -20,27 +27,22 @@ dev-notify setup
 
 也可用环境变量覆盖凭据和接收人：`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`、`FEISHU_WEBHOOK`、`FEISHU_SECRET`；路径变量 `DEV_NOTIFY_HOME`、`CLAUDE_CONFIG_DIR`。显式存在的变量优先，空值也会覆盖；完整规则和自定义变量名见下文「路径、模板和环境变量」。
 
-`0.1.0-alpha.1` 不含 Claude Code hooks；以下回复交互要求 `0.1.0-alpha.3` 或以上。升级后须重新运行 `dev-notify integration claude-code install` 更新完整 hooks，并停止、重新启动已有回复桥接；已有有效授权和通知凭据无需重新配置。使用自定义配置时，继续传入原来的 `--config` 路径。源码开发可在工程目录构建后执行：
+默认安装使用 npm 的 `latest` 标签；`alpha` 是预发行标签，不代表比稳定版更新。可用上面的 `npm view` 命令核对标签，使用 `dev-notify --version` 核对已安装版本。升级说明见 changelog；升级后应更新完整 hooks 并重启已有回复桥接。有效授权和通知凭据无需重新配置，自定义配置继续传入原来的 `--config` 路径。
 
-```sh
-npm ci --ignore-scripts
-npm run build
-node dist/cli.js setup
-node dist/cli.js doctor
-```
+以下主流程使用 npm 安装的 `dev-notify` 命令；源码构建与 `node dist/cli.js` 用法见「开发与验证」。
 
 配置完成后发送：
 
 ```sh
-node dist/cli.js send --title "构建完成" --content "安装包已生成"
-node dist/cli.js send --title "测试结果" --content-file result.txt
-node dist/cli.js send --title "任务输出" --stdin
-node dist/cli.js send --title "分段预览" --content-file result.txt --dry-run
+dev-notify send --title "构建完成" --content "安装包已生成"
+dev-notify send --title "测试结果" --content-file result.txt
+dev-notify send --title "任务输出" --stdin
+dev-notify send --title "分段预览" --content-file result.txt --dry-run
 ```
 
 若需要本地安装为 `dev-notify` 命令，在构建后运行 `npm install --global .`，之后可执行 `dev-notify setup`、`dev-notify send ...`。这是本地源码安装，不是从公开 registry 安装；本工程不会自动进行全局安装或发布。
 
-正式包的安装、升级和卸载由 npm 负责。**卸载前建议先清理凭据**：npm 卸载不会自动删除用户凭据。请先交互执行 `dev-notify credentials clear`，再卸载。该命令只删除当前配置引用的 Node 凭据，不会动其他账号、其他配置或旧版原型凭据。
+正式包的安装、升级和卸载由 npm 负责。**卸载前建议先清理凭据**：npm 卸载不会自动删除用户凭据。请先交互执行 `dev-notify credentials clear`，再卸载。该命令只删除当前配置引用的 Node 凭据，不扫描其他配置或删除无关条目，也不处理旧版原型凭据；但共享同一凭据引用的配置副本也会失去该凭据。
 
 已安装的版本可以用 `update` 升级；它只负责检查版本并调用 npm，不会自己下载或替换文件：
 
@@ -73,7 +75,7 @@ dev-notify update --no-post # 只更新包，不执行 hooks/桥接维护
 ## 配置向导
 
 ```sh
-node dist/cli.js setup
+dev-notify setup
 ```
 
 1. 选择 Telegram、飞书或两者；编辑已有配置时显示当前选择，直接回车保留。
@@ -84,12 +86,12 @@ node dist/cli.js setup
 6. 确认后默认合并安装 Claude Code 通知 hooks（`--no-hooks` 跳过）。已有集成保持原样，不重复添加。
 7. 远程回复授权不在 setup 中询问；Telegram 可用时提示另行运行 `reply setup`，选择具体可信私聊用户并单独确认。
 
-编辑已有配置不再二次询问是否继续；密钥留空保留已存值，可选签名输入 `-` 清除。没有选中的渠道会被禁用，新条目只保留所选渠道的凭据。环境变量仍然优先（`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`、`FEISHU_WEBHOOK`、`FEISHU_SECRET`）；向导会提示哪些变量正在覆盖配置，测试和最终保存也都使用生效后的值。完整列表见「路径、模板和环境变量」。
+编辑已有配置不再二次询问是否继续；密钥留空保留已存值，可选签名输入 `-` 清除。没有选中的渠道会被禁用，新条目只保留所选渠道的凭据。环境变量仍然优先（`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS`、`FEISHU_WEBHOOK`、`FEISHU_SECRET`）；向导会提示哪些变量正在覆盖配置；测试和后续运行使用环境覆盖后的有效值，但持久保存的是向导输入的凭据与选择的接收人，不会把环境覆盖值自动写回配置或系统凭据。完整列表见「路径、模板和环境变量」。
 
 自动化使用无密钥模板和 CI secrets：
 
 ```sh
-node dist/cli.js setup --template --yes
+dev-notify setup --template --yes
 ```
 
 需要只保存配置、不发送测试或不安装 hooks 时，使用 `setup --no-test` / `setup --no-hooks`（可组合）。模板不会覆盖已有配置。`--yes` 只能配合 `--template` 使用；保存密钥前仍然需要交互确认。
@@ -187,7 +189,7 @@ Node 版使用 **Windows Credential Manager / macOS Keychain**，通过原生 No
 - 原生组件加载失败、存储锁定或拒绝访问时会明确报错，不会降级为明文文件。macOS 可能要求系统授权；离线环境仍可能出现系统提示。
 - 默认不枚举系统条目，只访问当前引用或本次新建的随机条目。
 
-旧版原型使用 `backend: "system"`，Windows 上是 DPAPI 文件，与 Node Credential Manager 不是同一存储。Node 不会读取或删除它。遇到旧配置时，可以运行 `setup` 重新输入并生成 Node 引用，原凭据保持不变。早期原型的源码、测试和文档已从主分支移除，仍可在 Git 历史中查阅。
+旧版原型使用 `backend: "system"`，Windows 上是 DPAPI 文件，与 Node Credential Manager 不是同一存储。Node 不会读取或删除它。遇到旧配置时，可以运行 `setup` 重新输入并生成 Node 引用，原凭据保持不变。此兼容性限制不影响已使用 `keyring` 引用的配置。
 
 ## 路径、模板和环境变量
 
@@ -269,7 +271,7 @@ Node 版使用 **Windows Credential Manager / macOS Keychain**，通过原生 No
 配置写入使用排他 `.setup.lock`，写入前及切换前都会核对原文件。请在向导保存期间避免用编辑器并发修改配置；编辑器不遵守这个锁。断电或强杀可能留下锁或孤立条目，存储和 JSON 也不是跨系统原子事务。确认没有向导运行后，才能处理残留锁；程序不会主动扫描或删除未知条目。
 
 ```sh
-node dist/cli.js credentials clear
+dev-notify credentials clear
 ```
 
 清理必须交互确认，先去除当前 JSON 引用，再尝试删除其 Node 条目；环境变量保持不变。共享同一旧引用的配置副本也会受影响，操作前会告知。删除失败会明确警告，不会显示为已清理。
@@ -292,20 +294,32 @@ node dist/cli.js credentials clear
 | 2 | 参数、配置、文件或凭据操作错误 |
 | 130 | 用户取消 |
 
-向导保存成功后测试通知失败，命令仍以保存成功结束，并明确显示测试失败，两者会清楚区分。保存后取消 hook 配置仍返回 0 并保留渠道；hook 配置出错返回 1，明确提示渠道已保存。集成 `status` 在条目缺失、重复或当前用户级文件禁用 hooks 时返回 1。内部 hook 处理命令始终非阻塞退出，失败通过 stderr 报告。
+向导保存成功后测试通知失败，命令仍以保存成功结束，并明确显示测试失败，两者会清楚区分。保存后取消 hook 配置仍返回 0 并保留渠道；hook 配置出错返回 1，明确提示渠道已保存。集成 `status` 在条目缺失、重复或当前用户级文件禁用 hooks 时返回 1。内部 hook 处理失败通过 stderr 报告，并采用不阻止宿主的退出码；这不代表异步或立即返回，等待远程答案的同步 hook 仍会在约定超时内等待。
 
 ## 开发与验证
 
+从 [GitHub 源码仓库](https://github.com/QueCue/dev-notify)克隆后，在仓库目录执行，npm 将按锁文件安装固定版本依赖，无需检出通讯库仓库：
+
 ```sh
 npm ci --ignore-scripts
+npm run build
+node dist/cli.js setup
+node dist/cli.js doctor
+node dist/cli.js send --title "构建完成" --content "安装包已生成"
 npm test
 npm pack --dry-run
 ```
 
+其他 CLI 示例中的 `dev-notify` 也可替换为 `node dist/cli.js`，无须全局安装。
+
 `node-src/` 是 TypeScript 源码，`dist/` 是编译输出，`test-js/` 是测试。默认测试只用假凭据和模拟后端/网络；本机原生假条目往返测试需显式设置 `DEV_NOTIFY_NATIVE_TEST=1`，且只在 Windows 启用，使用随机 ID，结束后清理。
 
-npm 发布白名单只有 `dist/*.js`、README、SECURITY、CHANGELOG、LICENSE 和必需的 package.json；不包含测试、配置或密文。没有 postinstall、自动启动或自写下载脚本；预编译原生依赖由 npm 的平台 optional 包解析，**请勿使用 `--omit=optional`**。macOS x64/arm64 和 Windows x64/arm64 预编译包由依赖提供，提供包并不等同于本项目已完成实机验收。
+当前 0.2.2 源码的 npm 白名单仅包含本应用 CLI 编译 JS、README、SECURITY、CHANGELOG、LICENSE 和 package.json；不包含通讯库副本、测试、真实配置、密文或依赖 tarball。运行时依赖由 npm 单独解析。已发布版本的包内容以对应版本为准。没有 postinstall、自动启动或自写下载脚本；预编译原生依赖由 npm 的平台 optional 包解析，**请勿使用 `--omit=optional`**。macOS x64/arm64 和 Windows x64/arm64 预编译包由依赖提供，提供包并不等同于本项目已完成实机验收。
 
-本机验证环境为 Windows x64、Node 24。自动化回归 203 项：202 通过、0 失败、1 项需显式启用的原生凭据测试跳过。覆盖临时 hooks、回复/授权/过期/防重放、单选/多选/自定义、单次权限 JSON、双端竞争、反馈异常及按接收人的重复提醒去重。实际 CLI 子进程完成后台 start → PreToolUse 登记 → PermissionRequest → 假 Bot 按钮 → JSON 答案 → 模拟 PostToolUse → 最终反馈 → 通知去重/后续工具提醒 → stop；该闭环使用模拟网络和进程元数据，不能替代实机输入验证。另由用户在 Windows 原生 Claude Code 2.1.316 与真实 Telegram 完成本机优先、远端优先、多选、自定义、不同答案竞争，以及延迟通用提醒去重的实机验收。隔离编译和测试不会覆盖真实 hooks 引用的 dist；Windows 原生输入帮助类的自动化测试只做编译/布局验证，不会执行真实 Send。macOS 两条终端适配器只有模拟验证；macOS 实机、Node 最低版本、版本管理器切换、工具权限应答实机及完整公开发布审计尚未完成验收。
+各已发布版本的验证结果见 [CHANGELOG.md](CHANGELOG.md)。当前 0.2.2 源码在 Windows x64、Node 24 下的回归记录为 219 项：218 通过、0 失败、1 项需显式启用的原生凭据测试跳过；该记录不代表已发布 npm 包的验证结果。
 
-采用 MIT，见 [LICENSE](LICENSE)。安全边界见 [SECURITY.md](SECURITY.md)。版本更新需单独发布到 npm，GitHub 推送不会自动更新 npm 安装包。
+自动化覆盖临时 hooks、回复/授权/过期/防重放、单选/多选/自定义、单次权限 JSON、双端竞争、反馈异常及按接收人的重复提醒去重。实际 CLI 子进程完成后台 start → PreToolUse 登记 → PermissionRequest → 假 Bot 按钮 → JSON 答案 → 模拟 PostToolUse → 最终反馈 → 通知去重/后续工具提醒 → stop；该闭环使用模拟网络和进程元数据，不能替代实机输入验证。Windows 原生输入帮助类的自动化测试只做编译/布局验证，不会执行真实 Send。
+
+实机验收与自动化结果分别记录：Windows 原生 Claude Code 2.1.316 与真实 Telegram 的问答验收覆盖本机优先、远端优先、多选、自定义、不同答案竞争及延迟通用提醒去重；这些问答测试不验证普通回复的终端输入注入。macOS 两条终端适配器只有模拟验证；macOS 实机、Node 最低版本、版本管理器切换及工具权限应答实机尚未完成验收，本项目也尚未完成安全审计。
+
+采用 MIT，见 [LICENSE](LICENSE)。安全边界见 [SECURITY.md](SECURITY.md)。源码变更只有发布新 npm 版本后才提供给安装用户；普通分支推送不发布，符合版本规则的 `v*` 标签会触发仓库的发布工作流。维护者流程见 [npm 发布说明](https://github.com/QueCue/dev-notify/blob/main/.github/NPM_PUBLISH.md)。
