@@ -11,11 +11,30 @@ import { telegramApi, type TelegramApi } from './reply-telegram.js';
 import { acquireBotLock, processState } from './reply-lock.js';
 import { drainReplies, processUpdate } from './reply-engine.js';
 import { drainInteractionFeedback } from './reply-outcomes.js';
-import { saveBridgeFailure, safeFailureReason, TelegramConnectionResetError, type BridgeDiagnosticStage } from './notification-diagnostics.js';
+import { saveBridgeFailure, safeFailureReason, TelegramConnectionResetError, isBridgeDiagnosticStage, type BridgeDiagnosticStage } from './notification-diagnostics.js';
+import { UI_ERROR_CODES, isBridgeFailureKey, type BridgeFailureKey } from './error-codes.js';
+
+export interface BridgeProblem { key: BridgeFailureKey; stage: BridgeDiagnosticStage }
+function problemAt(stage: BridgeDiagnosticStage, error?: unknown): BridgeProblem {
+  const key: BridgeFailureKey = error instanceof TelegramConnectionResetError ? 'bridge.failureReset'
+    : stage === 'spawn' || stage === 'spawn-error' || stage === 'runtime-paths' ? 'bridge.startSpawnFailed'
+    : stage === 'wait-timeout' ? 'bridge.startTimedOut'
+    : stage === 'existing-unready' ? 'bridge.existingUnready'
+    : stage === 'child-exit' || stage === 'worker-error' ? 'bridge.startExited'
+    : ['getWebhookInfo', 'getMe', 'initial-getUpdates'].includes(stage) ? 'bridge.failureInit' : 'bridge.failureOther';
+  return { key, stage };
+}
+function leaseProblem(value: unknown): BridgeProblem | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const problem = value as BridgeProblem;
+  return isBridgeFailureKey(problem.key) && isBridgeDiagnosticStage(problem.stage)
+    ? { key: problem.key, stage: problem.stage } : undefined;
+}
 
 interface BridgeAttempt {
   started: number; stage: BridgeDiagnosticStage;
   failure?: { stage: BridgeDiagnosticStage; reason: string };
+  problem?: BridgeProblem;
 }
 async function recordFailure(file: string, source: 'start' | 'worker', attempt: BridgeAttempt, error?: unknown): Promise<void> {
   const failure = attempt.failure;
@@ -23,11 +42,12 @@ async function recordFailure(file: string, source: 'start' | 'worker', attempt: 
     stage: failure?.stage ?? attempt.stage, elapsedMs: Math.max(0, Math.round(performance.now() - attempt.started)),
     outcome: source === 'worker' || error !== undefined || ['spawn-error', 'child-exit', 'worker-error'].includes(attempt.stage) ? 'failed' : 'unconfirmed',
     ...(failure ? { reason: failure.reason } : error !== undefined ? { reason: safeFailureReason(error) } : {}),
+    errorCode: UI_ERROR_CODES[(attempt.problem ?? problemAt(failure?.stage ?? attempt.stage, error)).key],
   }).catch(() => {}); // 诊断写入失败不能改变启动结果或触发重试。
 }
 
 interface Lease { pid: number; owner: string; ready: boolean; updated: number; error?: string;
-  identity?: string; botUsername?: string }
+  identity?: string; botUsername?: string; problem?: BridgeProblem }
 const leasePath = (file: string) => path.join(replyDirectory(file), 'bridge.json');
 const controlPath = (file: string) => path.join(replyDirectory(file), 'stop.json');
 function alive(pid: unknown): boolean {
@@ -40,8 +60,10 @@ function statusOf(lease: Lease | null): { running: boolean; ready: boolean; erro
   const fresh = !!lease && Number.isFinite(lease.updated) && Date.now() - lease.updated < 30000 && lease.updated <= Date.now() + 10000;
   return { running, ready: lease?.ready === true && running && fresh && !lease.error && processState(lease.pid) === 'alive', error: lease?.error };
 }
-export async function bridgeStatus(file: string): Promise<{ running: boolean; ready: boolean; error?: string }> {
-  return statusOf(await readJson(leasePath(file)) as Lease | null);
+export async function bridgeStatus(file: string): Promise<{ running: boolean; ready: boolean; error?: string; problem?: BridgeProblem }> {
+  const lease = await readJson(leasePath(file)) as Lease | null;
+  const status = statusOf(lease), problem = !status.ready && lease?.error ? leaseProblem(lease.problem) : undefined;
+  return { ...status, ...(problem ? { problem } : {}) };
 }
 export async function bridgeBotUsername(file: string, identity: string): Promise<string | null> {
   const lease = await readJson(leasePath(file)) as Lease | null;
@@ -69,12 +91,17 @@ export async function stopBridge(file: string): Promise<boolean> {
 export interface BridgeStartDependencies {
   spawn?: typeof spawn;
   sleep?: (ms: number) => Promise<unknown>;
+  onFailure?: (problem: BridgeProblem) => void;
 }
 export async function startBridge(file: string, env: Env = process.env, deps: BridgeStartDependencies = {}): Promise<boolean> {
   const attempt: BridgeAttempt = { started: performance.now(), stage: 'authorization' };
   try {
     const ready = await startBridgeAttempt(file, env, deps, attempt);
-    if (!ready) await recordFailure(file, 'start', attempt);
+    if (!ready) {
+      await recordFailure(file, 'start', attempt);
+      try { deps.onFailure?.(attempt.problem ?? problemAt(attempt.stage)); }
+      catch { /* 展示失败不改变原启动结果或触发新请求。 */ }
+    }
     return ready;
   } catch (error) { await recordFailure(file, 'start', attempt, error); throw error; }
 }
@@ -104,6 +131,8 @@ async function startBridgeAttempt(file: string, env: Env, deps: BridgeStartDepen
     if (statusOf(lease).ready) return true;
     if (failed || exited || lease?.pid === child.pid && lease?.owner !== previous?.owner && lease?.error) {
       attempt.stage = failed ? 'spawn-error' : exited ? 'child-exit' : 'worker-error';
+      // 只采用本次子进程的新租约，不拿历史 worker 失败冒充当前启动原因。
+      if (lease && lease.pid === child.pid && lease.owner !== previous?.owner && lease.error) attempt.problem = leaseProblem(lease.problem);
       return false;
     }
   }
@@ -253,8 +282,10 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
     if (heartbeatFailed) throw new ConfigError(t('reply.bridgeFailed'));
   } catch (error) {
     attempt.failure = { stage: attempt.stage, reason: safeFailureReason(error) };
+    attempt.problem = problemAt(attempt.stage, error);
     stopHeartbeat();
     lease.ready = false; lease.error = error instanceof ConfigError ? error.message : t('reply.bridgeFailed');
+    lease.problem = attempt.problem;
     await saveLease().catch(() => {});
     throw error;
   } finally {

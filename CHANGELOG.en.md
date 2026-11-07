@@ -2,6 +2,20 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## 0.2.7 — 2026-11-07
+
+Promote the diagnostics and recovery improvements from `0.2.7-beta.0` through `beta.3`, together with user-interface error codes, to the stable npm `latest` channel.
+
+- Retain safe notification-failure and bridge parent/worker summaries across recovery; distinguish historical failures, failures during retry, and final state when troubleshooting.
+- Read-only bridge initialization queries `getWebhookInfo`/`getMe` share one delayed retry for explicit `ECONNRESET`. Completion-notification identity lookup also permits only one explicit-reset retry, with authorization and session revalidation. Only after both button identity lookups reset may the current active bridge's initialization identity be reused under full checks. No additional network replay for notification sending, update consumption, or input.
+- On macOS / Node 26.13.0, the user confirmed that the latest controlled upgrade's first notification completed on both channels with buttons, recording `attached` and `identityRetries: 1` without exercising the bridge-identity fallback. Earlier bridge-initialization failures remain documented; the reset source and stable triggering conditions are unknown. This release does not promise removal of the root cause, and the new error-code messages have not yet been accepted on a real Mac.
+
+- Add fixed `[DN-…]` codes to user-interface errors for configuration, credentials, updates/maintenance, bridges, button preparation, and delivery, consistent across Chinese and English. Unclassified CLI validation/credential failures and unknown system exceptions retain safe fallback codes without underlying exceptions.
+- Startup parents display allowlisted failure categories and stages directly from their own worker's new lease. Without reliable details, use a generic code rather than inferring the current cause from historical failures. Readiness timeout explicitly remains unconfirmed, without assuming process exit or recommending another `reply run`.
+- `reply status` labels retained lease failures instead of printing their original error text. Button-skip notices add understandable explanations; ordinary send failures display the channel, API-acknowledged part count, and safe category without forwarding arbitrary error text. Error presentation does not change network retries, input, authorization, or exit-code rules.
+- README additions cover only error-code reporting and necessary troubleshooting. Keep code-maintenance rules in CONTRIBUTING and allowlist/legacy-lease boundaries in SECURITY. These additions ship in this stable release without changing the published beta.3 package.
+- Full isolated regression on Windows x64 / Node 24.12.0 totals 371 tests: 370 passed, 0 failed, and 1 opt-in native credential test skipped. Coverage includes language-independent codes, actual CLI status rendering, legacy-lease/arbitrary-exception redaction, current-child failure propagation, unconfirmed timeouts, no stale-failure reporting after recovery, and no send retries. An actual CLI invalid-argument smoke check preserves exit code 2. New messages have not yet been accepted on a real Mac.
+
 ## 0.2.7-beta.3 — 2026-11-07
 
 - Preserve the existing `getMe` query and single connection-reset retry order for completion notifications. Only after both attempts explicitly fail with `ECONNRESET`, revalidate authorization, session, and bridge before allowing the bot username verified during the current active lease's initialization to be reused. Older bridges without that metadata retain ordinary-notification degradation without restarting a live worker. No fallback for 401, invalid usernames, or other errors.

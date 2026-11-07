@@ -29,9 +29,15 @@ export type BridgeDiagnosticStage = 'authorization' | 'lease-read' | 'existing-u
   | 'spawn' | 'wait-ready' | 'spawn-error' | 'child-exit' | 'worker-error' | 'wait-timeout'
   | 'storage' | 'bot-lock' | 'lease-write' | 'getWebhookInfo' | 'getMe' | 'state-read'
   | 'initial-getUpdates' | 'state-write' | 'ready' | 'polling' | 'cleanup';
+export const BRIDGE_DIAGNOSTIC_STAGES: readonly BridgeDiagnosticStage[] = ['authorization', 'lease-read', 'existing-unready', 'runtime-paths',
+  'spawn', 'wait-ready', 'spawn-error', 'child-exit', 'worker-error', 'wait-timeout', 'storage', 'bot-lock', 'lease-write',
+  'getWebhookInfo', 'getMe', 'initial-getUpdates', 'state-read', 'state-write', 'ready', 'polling', 'cleanup'];
+export function isBridgeDiagnosticStage(value: unknown): value is BridgeDiagnosticStage {
+  return typeof value === 'string' && (BRIDGE_DIAGNOSTIC_STAGES as readonly string[]).includes(value);
+}
 export interface BridgeFailureDiagnostic {
   version: 1; updated: number; pid: number; stage: BridgeDiagnosticStage;
-  elapsedMs: number; outcome: 'failed' | 'unconfirmed'; reason?: string;
+  elapsedMs: number; outcome: 'failed' | 'unconfirmed'; reason?: string; errorCode?: string;
 }
 export async function saveBridgeFailure(file: string, source: 'start' | 'worker', value: BridgeFailureDiagnostic): Promise<void> {
   // 每种来源只保留最近一次失败；不存凭据、API URL、响应正文或原始异常。

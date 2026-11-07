@@ -134,7 +134,12 @@ export async function attachReply(message: Message, data: any, file: string, opt
   if (!access) { options.replyDiagnostic?.('disabled'); return null; }
   const skip = (reason: ReplyDiagnosticCode) => {
     options.replyDiagnostic?.(reason);
-    options.err?.(t('reply.buttonSkipped', { reason }));
+    const detail = t(reason === 'disabled' ? 'reply.skipDisabled'
+      : reason === 'session-working' ? 'reply.skipWorking'
+      : reason === 'input-unobserved' ? 'reply.skipInput'
+      : reason === 'identity-changed' ? 'reply.skipChanged'
+      : reason === 'bridge-unready' ? 'reply.skipBridge' : 'reply.skipSession');
+    options.err?.(t('reply.buttonSkipped', { reason, detail }));
     return null;
   };
   const target = await getTarget(data, options);

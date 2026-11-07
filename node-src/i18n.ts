@@ -1,4 +1,5 @@
 import type { Env } from './config.js';
+import { UI_ERROR_CODES } from './error-codes.js';
 
 export type Locale = 'zh' | 'en';
 type Params = Record<string, string | number>;
@@ -227,7 +228,15 @@ const zh = {
   'cli.bridgeStarting': '桥接：进程存在，但还没有就绪。',
   'cli.bridgeNotRunning': '桥接：未运行。',
   'cli.replyStartReady': '回复桥接已就绪。请从新的任务通知进入。',
-  'cli.replyStartNotReady': '桥接还没有就绪。请运行 reply status 或 reply run 查看原因；如果旧版桥接在运行，请先停用它。',
+  'cli.replyStartNotReady': '桥接还没有就绪，回复按钮及远程回复暂不可用。请运行 dev-notify reply status 查看当前状态，并反馈本行错误码；不要直接另起 reply run 或强制结束未知进程。',
+  'bridge.failureReset': '回复桥接在 {stage} 阶段连接被重置，无法继续就绪；无法确定重置来源。回复按钮及远程回复暂不可用，普通通知仍会独立尝试。请运行 dev-notify reply status，并反馈本行错误码。',
+  'bridge.failureInit': '回复桥接在 {stage} 阶段初始化失败，回复按钮及远程回复暂不可用。请运行 dev-notify reply status，并反馈本行错误码；这里不显示底层异常。',
+  'bridge.failureOther': '回复桥接在 {stage} 阶段失败，尚未确认可用。请运行 dev-notify reply status，并反馈本行错误码；这里不显示底层异常。',
+  'bridge.startSpawnFailed': '无法创建桥接进程（阶段：{stage}），没有确认桥接就绪。请检查当前 Node 安装和执行权限，并运行 dev-notify reply status。',
+  'bridge.startExited': '本次桥接启动未完成（阶段：{stage}），没有取得可安全展示的具体原因。请运行 dev-notify reply status，并反馈本行错误码。',
+  'bridge.startTimedOut': '等待桥接就绪超时（阶段：{stage}）；结果未确认，不等于进程已退出。请运行 dev-notify reply status，不要强停进程或另起消费者。',
+  'bridge.existingUnready': '已有桥接进程存在但未就绪，不会另起消费者（阶段：{stage}）。请运行 dev-notify reply status；不要删除锁或强停未知进程。',
+  'bridge.previousFailure': '本地租约保留的失败（不代表故障当前仍在发生）：{detail}',
   'cli.languageCurrent': '当前语言：{language}（{code}）。',
   'cli.languageChanged': '语言已切换为{language}（{code}）。',
   'cli.languageAlready': '当前已经是{language}（{code}）。',
@@ -272,7 +281,7 @@ const zh = {
   'maintenance.startingBridge': '恢复已授权但未运行的回复桥接 ...',
   'maintenance.bridgeStillRunning': '回复桥接仍在退出，请稍后运行 dev-notify reply start。',
   'maintenance.bridgeRestarted': '回复桥接已重启。',
-  'maintenance.bridgeStartFailed': '回复桥接启动失败。',
+  'maintenance.bridgeStartFailed': '回复桥接启动失败，远程回复尚未确认可用；普通通知仍独立尝试，已安装版本不会因此回退。请运行 dev-notify reply status，并保留上方具体错误码。',
   'maintenance.bridgeRestartFailed': '回复桥接重启失败：{reason}',
   'maintenance.noBridge': '未检测到运行中的回复桥接，跳过。',
 
@@ -329,7 +338,13 @@ const zh = {
   'hook.replyNotReady': '回复按钮准备失败（会话、授权、本地状态或桥接检查）；仍会尝试向各渠道发送普通通知，不代表 Telegram 已送达。',
   'hook.replyIdentityFailed': '回复按钮准备失败：Telegram getMe 身份查询失败（{reason}）；仍会尝试发送不带按钮的普通通知。',
   'hook.diagnosticWriteFailed': '本次通知的本地诊断摘要未能保存；不影响已发送的通知，不会因此重发。',
-  'reply.buttonSkipped': '本次通知不带回复按钮（原因代码：{reason}）；会话身份及输入跟踪检查没有放宽。',
+  'reply.buttonSkipped': '本次通知不带回复按钮：{detail}（状态：{reason}）。普通通知仍会独立尝试，会话身份及输入跟踪检查没有放宽。',
+  'reply.skipDisabled': '远程回复未启用或授权已撤销',
+  'reply.skipSession': '当前会话无法可靠核验或已不在有效登记中',
+  'reply.skipWorking': '已观察到会话仍在工作或有新的本地输入',
+  'reply.skipInput': '尚未观察到本会话的本地输入，不能授予回复入口',
+  'reply.skipChanged': '授权或会话进程身份已变化，不能继承旧入口',
+  'reply.skipBridge': '回复桥接尚未就绪，可运行 dev-notify reply status 查看',
   'hook.sendIncompleteDetail': '{channel}：通知投递或发送后处理未全部完成（API 确认 {sent}/{planned} 段；{reason}）。整条消息不会自动重发。',
   'hook.sendFailedDetail': '{channel}：通知发送流程失败（{reason}）。整条消息不会自动重发。',
   'diagnostic.network': '网络请求失败或响应无效（可能为超时或连接异常，无法进一步区分）',
@@ -757,7 +772,15 @@ secrets are never written in plaintext.`,
   'cli.bridgeStarting': 'Bridge: process exists but is not ready yet.',
   'cli.bridgeNotRunning': 'Bridge: not running.',
   'cli.replyStartReady': 'Reply bridge ready. Enter from a new task notification.',
-  'cli.replyStartNotReady': 'The bridge is not ready yet. Run reply status or reply run to see why; if an old bridge is running, stop it first.',
+  'cli.replyStartNotReady': 'The bridge is not ready; reply buttons and remote replies are temporarily unavailable. Run dev-notify reply status and report this error code. Do not start another reply run or force-stop unknown processes.',
+  'bridge.failureReset': 'The reply bridge connection was reset at stage {stage} and readiness could not be completed; the reset source is unknown. Reply buttons and remote replies are unavailable; ordinary notifications are attempted independently. Run dev-notify reply status and report this error code.',
+  'bridge.failureInit': 'Reply bridge initialization failed at stage {stage}; reply buttons and remote replies are unavailable. Run dev-notify reply status and report this error code. Underlying exceptions are withheld.',
+  'bridge.failureOther': 'The reply bridge failed at stage {stage}; availability is not confirmed. Run dev-notify reply status and report this error code. Underlying exceptions are withheld.',
+  'bridge.startSpawnFailed': 'Could not create the bridge process (stage: {stage}); readiness was not confirmed. Check the current Node installation and execute permissions, then run dev-notify reply status.',
+  'bridge.startExited': 'This bridge startup did not complete (stage: {stage}); no specific cause is available for safe display. Run dev-notify reply status and report this error code.',
+  'bridge.startTimedOut': 'Waiting for bridge readiness timed out (stage: {stage}); the result is unconfirmed, not proof that the process exited. Run dev-notify reply status; do not force-stop processes or start another consumer.',
+  'bridge.existingUnready': 'An existing bridge process is not ready; no second consumer will be started (stage: {stage}). Run dev-notify reply status; do not delete locks or force-stop unknown processes.',
+  'bridge.previousFailure': 'Failure retained in the local lease (not proof of an ongoing fault): {detail}',
   'cli.languageCurrent': 'Current language: {language} ({code}).',
   'cli.languageChanged': 'Language changed to {language} ({code}).',
   'cli.languageAlready': 'Already using {language} ({code}).',
@@ -802,7 +825,7 @@ secrets are never written in plaintext.`,
   'maintenance.startingBridge': 'Restoring the authorized reply bridge that is not running ...',
   'maintenance.bridgeStillRunning': 'The reply bridge is still exiting; run dev-notify reply start later.',
   'maintenance.bridgeRestarted': 'Reply bridge restarted.',
-  'maintenance.bridgeStartFailed': 'The reply bridge failed to start.',
+  'maintenance.bridgeStartFailed': 'The reply bridge failed to start; remote replies are not confirmed available. Ordinary notifications are attempted independently, and the installed version is not rolled back. Run dev-notify reply status and retain the specific error code above.',
   'maintenance.bridgeRestartFailed': 'The reply bridge failed to restart: {reason}',
   'maintenance.noBridge': 'No running reply bridge detected; skipping.',
 
@@ -859,7 +882,13 @@ secrets are never written in plaintext.`,
   'hook.replyNotReady': 'Reply button preparation failed during session, authorization, local-state, or bridge checks; normal notifications will still be attempted on each channel. This does not mean Telegram delivery succeeded.',
   'hook.replyIdentityFailed': 'Reply button preparation failed: Telegram getMe identity lookup failed ({reason}); normal notifications without buttons will still be attempted.',
   'hook.diagnosticWriteFailed': 'Could not save the local diagnostic summary. Sent notifications are unaffected and will not be resent.',
-  'reply.buttonSkipped': 'This notification has no reply button (reason code: {reason}); session identity and input-tracking checks remain enforced.',
+  'reply.buttonSkipped': 'This notification has no reply button: {detail} (state: {reason}). Ordinary notifications are attempted independently; session identity and input-tracking checks remain enforced.',
+  'reply.skipDisabled': 'Remote replies are disabled or authorization was revoked',
+  'reply.skipSession': 'The current session cannot be verified reliably or is no longer registered',
+  'reply.skipWorking': 'The session is still working or new local input was observed',
+  'reply.skipInput': 'No local input has been observed for this session; a reply entry cannot be granted',
+  'reply.skipChanged': 'Authorization or session process identity changed; the old entry cannot be inherited',
+  'reply.skipBridge': 'The reply bridge is not ready; run dev-notify reply status to check',
   'hook.sendIncompleteDetail': '{channel}: delivery or post-send processing did not fully complete (API acknowledged {sent}/{planned} parts; {reason}). The message will not be resent automatically.',
   'hook.sendFailedDetail': '{channel}: notification sending failed ({reason}). The message will not be resent automatically.',
   'diagnostic.network': 'Network request failed or response was invalid (possibly a timeout or connection failure; cannot distinguish further)',
@@ -1081,7 +1110,9 @@ export function joinList(items: readonly string[]): string {
 
 export function t(key: MessageKey, params: Params = {}): string {
   const message = current === 'en' ? en[key] : zh[key];
-  if (typeof message === 'function') return message(params);
-  return message.replace(/\{(\w+)\}/g, (match, name: string) =>
-    Object.hasOwn(params, name) ? String(params[name]) : match);
+  const text = typeof message === 'function' ? message(params)
+    : message.replace(/\{(\w+)\}/g, (match, name: string) =>
+      Object.hasOwn(params, name) ? String(params[name]) : match);
+  const code = (UI_ERROR_CODES as Partial<Record<MessageKey, string>>)[key];
+  return code ? `[${code}] ${text}` : text;
 }

@@ -26,6 +26,7 @@ Communication uses the standard npm dependency [QueCue/notify-core](https://gith
 - The Windows native credential round-trip requires explicit `DEV_NOTIFY_NATIVE_TEST=1`; use and clean only random fake entries created for that run, not existing credentials.
 - Compiling native input helpers and checking layouts does not establish real input acceptance. Mock API, terminal, and permission failures cannot establish compatibility on every platform.
 - Cover success, explicit failure, unknown outcomes, and secret protection. Do not blindly replay input or messages with unknown outcomes.
+- Maintain user-interface error codes centrally in `node-src/error-codes.ts`, rendered through `i18n.ts`. Keep each code's meaning and language-independent identity stable. Add codes only for new confirmed categories; never encode tokens, paths, user identity, or inferred root causes. Unclassified CLI validation/credential failures use `DN-CONFIG`/`DN-CREDENTIAL`; unknown system exceptions use `DN-UNKNOWN` without the underlying exception. Preserve structured hook control JSON and exit-code semantics.
 - Record release verification in CHANGELOG, distinguishing automation, real-machine confirmation, and unverified cases. Do not add those records to the user README.
 
 ## Documentation responsibilities

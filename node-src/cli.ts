@@ -12,13 +12,14 @@ import { CredentialError, type Store } from './credentials.js';
 import { claudeCodeStatus, claudeSettingsPath, configureClaudeCode } from './claude-code.js';
 import { dispatchClaudeHook, readHookInput } from './claude-hook.js';
 import { accessReplies, configureReplies, disableReplies } from './reply-state.js';
-import { startBridge, stopBridge, bridgeStatus, runBridge } from './reply-bridge.js';
+import { startBridge, stopBridge, bridgeStatus, runBridge, type BridgeProblem } from './reply-bridge.js';
 import type { ReplyHookOptions } from './reply-hooks.js';
 import { updatePackage } from './update.js';
 import { postUpdate } from './maintenance.js';
 import { joinList, localeName, parseLocale, resolveLocale, setLocale, t, type Locale } from './i18n.js';
+import { safeDeliveryReason } from './notification-diagnostics.js';
 
-export const VERSION = '0.2.7-beta.3';
+export const VERSION = '0.2.7';
 const helpText = () => t('cli.help', { version: VERSION });
 function rawLang(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -173,12 +174,15 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
         context.out(access ? t('cli.replyStatusAccess', { users: access.policy.users.length,
           state: t(access.policy.permissions ? 'cli.replyPermissionOn' : 'cli.replyPermissionOff') }) : t('cli.replyStatusNoAccess'));
         context.out(status.ready ? t('cli.bridgeReady') : status.running ? t('cli.bridgeStarting') : t('cli.bridgeNotRunning'));
-        if (status.error) context.err(status.error);
+        if (!status.ready && status.error) context.err(t('bridge.previousFailure', {
+          detail: status.problem ? t(status.problem.key, { stage: status.problem.stage }) : t('reply.bridgeFailed'),
+        }));
         return access && status.ready ? 0 : 1;
       }
       if (action === 'run') { await runBridge(file, { env: context.env, lang: values.lang, log: context.err }); return 0; }
-      const ready = await startBridge(file, context.env);
-      context.out(ready ? t('cli.replyStartReady') : t('cli.replyStartNotReady'));
+      let problem: BridgeProblem | undefined;
+      const ready = await startBridge(file, context.env, { onFailure: value => { problem = value; } });
+      context.out(ready ? t('cli.replyStartReady') : problem ? t(problem.key, { stage: problem.stage }) : t('cli.replyStartNotReady'));
       return ready ? 0 : 1;
     }
     if (command === 'credentials') {
@@ -260,13 +264,20 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
       if (values['dry-run']) { context.out(t('cli.dryRun', { channel: name, recipients: plan.recipients, items: plan.items.length })); continue; }
       const result = await context.send(plan, config);
       context.out(t('cli.sent', { channel: name, sent: result.sent, planned: result.planned }));
-      if (!result.ok) { failed = true; context.err(result.error ?? t('channels.sendFailed')); }
+      if (!result.ok) {
+        failed = true;
+        context.err(t('hook.sendIncompleteDetail', { channel: name, sent: result.sent, planned: result.planned,
+          reason: safeDeliveryReason(result.error) }));
+      }
     }
     if (!planned) throw new ConfigError(t('cli.noChannels'));
     return failed ? 1 : 0;
   } catch (error) {
     if (error instanceof Cancelled) { context.out(t('common.cancelled')); return isHook ? 0 : 130; }
-    context.err(error instanceof ConfigError || error instanceof CredentialError ? error.message : t('common.failure'));
+    const text = error instanceof ConfigError || error instanceof CredentialError ? error.message : t('common.failure');
+    // 尚未细分的校验/凭据错误也有稳定的兜底码，不把原始系统异常展示给用户。
+    context.err(/^\[DN-[A-Z0-9-]+\]/.test(text) ? text
+      : `[${error instanceof CredentialError ? 'DN-CREDENTIAL' : 'DN-CONFIG'}] ${text}`);
     // Stop hook 的退出码 2 会要求 Claude 继续；通知失败只能报告，不能阻塞或触发重试循环。
     return isHook ? 0 : 2;
   }

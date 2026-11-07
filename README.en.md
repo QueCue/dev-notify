@@ -198,6 +198,17 @@ dev-notify reply status
 
 `doctor`/`status` check local configuration and may request system credential access, but do not verify the network. A ready bridge does not prove every notification was delivered.
 
+Error messages use `[DN-…]` identifiers that stay the same across languages. To report a problem, provide the error code, failure stage (if present), and time; secrets and full configuration are not needed. Common examples:
+
+| Error code | Meaning and next step |
+| --- | --- |
+| `DN-BRIDGE-CONNECTION-RESET` | The bridge connection was reset; its source is unknown. Run `dev-notify reply status` to check the current state. |
+| `DN-BRIDGE-START-TIMEOUT` | Readiness waiting timed out, not proof of process exit. Do not start another consumer or delete locks. |
+| `DN-REPLY-IDENTITY` | Button identity lookup failed. Ordinary notification delivery is still attempted independently; this does not establish delivery. |
+| `DN-NOTIFY-INCOMPLETE` | Delivery or post-send processing did not fully complete. Check the channel and API-acknowledged part count; do not resend blindly. |
+
+Failures labeled as retained by `reply status` are not new failure events. If the bridge is now ready, do not restart it solely because of historical failures.
+
 - **No reply button:** confirm authorization, bridge readiness, and actual hook loading, then submit a normal new task in the target session. Unverifiable sessions do not gain input rights.
 - **Only one channel received a notification:** check that notification's channel error. Channels deliver independently; recovery does not automatically replay failed messages.
 - **Unavailable entry after an update:** check `dev-notify --version` and the active Node environment, then reinstall hooks. Existing hook entries alone do not prove usability.
