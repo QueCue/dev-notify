@@ -9,7 +9,9 @@
 - 版本与升级说明：[CHANGELOG.md](CHANGELOG.md)
 - 安全与隐私：[SECURITY.md](SECURITY.md)
 
-通用通知不依赖 Claude Code。通讯依赖 [QueCue/notify-core](https://github.com/QueCue/notify-core) 由 npm 自动安装，无需另行安装。
+通用通知不依赖 Claude Code。通讯使用标准 npm 依赖 [`@quecue/notify-core`](https://github.com/QueCue/notify-core)（`^0.2.0`），由 npm 自动安装，无需另行安装。
+
+飞书自建应用双向通讯要求 **0.3.0 或以上**。已有 Webhook 通知方式及 Webhook + Telegram 回复路径不变。
 
 ## 安装与快速开始
 
@@ -24,12 +26,24 @@ dev-notify setup
 向导会引导你选择渠道、填写凭据和接收人，并在保存前汇总确认：
 
 1. Telegram：准备 Bot Token，先向 Bot 发送消息，再选择接收人或手动填写数字 chat_id。多个接收人用逗号分隔。
-2. 飞书：填写中国站自定义机器人的 Webhook，可选填签名密钥。
-3. 密钥隐藏输入、不回显；终端无法隐藏输入时会停止。
+2. 飞书：先选择模式。默认 `webhook` 保留中国站自定义机器人的 Webhook 和可选签名密钥，仅单向通知；选择 `app` 则使用自建应用机器人，填写 App ID、App Secret 和接收人的 `open_id`。
+3. 凭据（包括应用的 App ID／App Secret）隐藏输入、不回显；终端无法隐藏输入时会停止。
 4. 确认后默认发送一条测试通知，并安装 Claude Code 通知 hooks；可分别用 `--no-test`、`--no-hooks` 跳过。
-5. 已有配置可再次运行 `setup` 编辑，密钥留空保留，选填签名输入 `-` 清除。
+5. 已有配置可再次运行 `setup` 编辑，凭据留空保留，选填签名输入 `-` 清除。
 
-凭据保存到 Windows Credential Manager／macOS Keychain，不明文写入配置。系统可能弹出凭据访问授权；失败时不会自动降级为明文存储。
+凭据保存到 Windows Credential Manager／macOS Keychain，不明文写入配置；也可使用下文所列环境变量。系统可能弹出凭据访问授权；失败时不会自动降级为明文存储。
+
+### 飞书自建应用准备
+
+仅自建应用机器人支持飞书内远程回复；Webhook 地址和签名密钥不能接收消息。
+
+1. 在飞书开放平台创建自建应用并开启机器人能力。
+2. 在“事件与回调”中选择长连接模式，订阅消息事件 `im.message.receive_v1`。
+3. 申请发送权限 `im:message:send_as_bot` 和私聊消息接收权限 `im:message.p2p_msg:readonly`。本工具不接受群聊输入，无需为远程回复申请群聊接收权限；具体审批要求以平台为准。
+4. 发布应用版本，设置可用范围并确保授权用户在范围内。准备该应用下用户的 `open_id`，不要使用群 chat_id、手机号或其他应用的用户 ID 替代。
+5. 运行 `dev-notify setup` 选择飞书 `app` 模式；需要远程输入时，再运行 `dev-notify reply setup` 单独授权。
+
+运行机器需能向外连接飞书服务；WebSocket 接收入站消息、HTTP API 发送／回复，不需要公网入口，也不支持卡片动作回调。
 
 ```sh
 dev-notify send --title "构建完成" --content "安装包已生成"
@@ -93,13 +107,16 @@ dev-notify reply start
 dev-notify reply status
 ```
 
-只授权可信的 Telegram 私聊用户，且这些用户必须在通知接收人名单中。群成员、飞书卡片查看者不会自动获得输入权。工具权限确认需要在 `reply setup` 中另行选择启用。
+`reply setup` 在 Telegram 和飞书应用渠道均可用时让你选择其中一个；**每份配置只有一个回复渠道**，不会同时接收两个渠道的远程输入。只授权当前通知名单中的可信用户：Telegram 私聊 chat_id，或飞书应用用户的 `open_id`。通知接收人、群成员、卡片查看者不会自动获得输入权。工具权限确认需要另行选择启用。
+
+重新授权或切换回复渠道后，先运行 `dev-notify reply stop`，再运行 `dev-notify reply start`，确保旧桥接退出且新授权已加载。
 
 ### 回复会话
 
-- 点击 Telegram 完成通知上的「💬 回复 Claude」，或直接回复该条消息。
-- 飞书的「在 Telegram 回复 Claude」会跳转到对应 Bot；按提示长按消息并选择「回复」后输入。
-- 只有桥接就绪且会话身份可核验时才显示按钮；请使用最新通知，旧消息不会自动补上按钮。
+- Telegram 回复渠道：点击 Telegram 完成通知上的回复按钮，或直接回复该条消息。
+- 保留 Webhook + Telegram 路径：飞书通知上的「在 Telegram 回复 Claude」会跳转到对应 Bot；按提示长按消息并选择「回复」后输入。Webhook 本身不能接收回复。
+- 飞书回复渠道：在与自建应用机器人的私聊中，**引用（回复）要继续的任务完成通知**并输入文字。不引用通知的普通消息不能用于猜测目标会话；群聊、机器人和非文本消息会被拒绝。
+- 只有桥接就绪且会话身份可核验时才开放回复入口；请使用最新通知，旧消息不会自动补上入口。飞书使用消息引用，不使用卡片动作回调。
 - Claude 工作时，普通回复先排队，结束后再尝试提交。5 分钟过期、新的本地输入或目标变化会取消旧任务。
 - 单条最多 4000 个 Unicode 字符。换行和控制字符会清理，内容作为一次终端输入提交，不按 Shell 执行。
 - 「已排队」「已转发」「Claude 已收到」不同；只有收到匹配的本地输入事件后才确认 Claude 已收到。输入失败或结果未知时不自动重试。
@@ -109,8 +126,9 @@ dev-notify reply status
 ### 选择题与工具权限
 
 - 支持实际问题的单选、多选、逐题自定义输入；本机界面仍可操作。
-- 单独启用工具权限确认后，可「本次允许」「拒绝」或填写拒绝说明，不提供永久批准规则。
-- 超时、撤销授权或无法核验目标时，不默认回答或批准；旧按钮不能处理新问题。
+- 飞书答题须引用对应的**题目消息**：单选输入一个编号（如 `2`），多选输入逗号分隔的编号（如 `1,3`），也可按题目提示输入自定义文字。
+- 单独启用工具权限确认后，Telegram 可选「本次允许」「拒绝」或填写拒绝说明；飞书须引用对应的**权限消息**，输入 `/allow` 一次允许、`/deny` 拒绝、`/close` 关闭远程处理并交回本机。其他文字仅作为拒绝说明，绝不视为批准；不提供永久批准规则。
+- 超时、撤销授权或无法核验目标时，不默认回答或批准；旧按钮和旧引用不能处理新问题。
 - 答案先显示已登记，再根据 Claude 的实际结果反馈生效、未生效或未知。
 - MCP 表单／URL 等未支持的交互需回到本机处理。
 
@@ -120,7 +138,9 @@ dev-notify reply status
 - macOS：支持前台原生 `claude` 的 tmux／Ghostty。Ghostty 可能需要系统 Automation 授权；拒绝授权时不会转投其他窗口。
 - 不支持向 VS Code 集成终端、WSL、SSH 或其他终端自动回退。macOS 原生输入及其他兼容性限制见 [SECURITY.md](SECURITY.md)。
 - 桥接是本机后台进程，不监听公网端口，也不配置系统开机自启；后续受支持的事件可以按需启动。
-- **同一个 Bot 只能有一个更新消费者**。不同机器的回复桥接请使用不同 Bot，不要并行运行 `reply start` 与 `reply run`。
+- **同一个 Telegram Bot 只能有一个更新消费者；同一个飞书应用只运行一个回复桥接**。飞书多个长连接消费者会分流事件，不是广播，可能导致某台机器收不到回复。不同机器请使用不同 Bot／应用，不要并行运行 `reply start` 与 `reply run`。
+- 飞书入站接收与本地处理分离，不会因为消息被接收或入队就确认 Claude 已收到。两渠道的会话核验、排队和平台限制相同，不会因改用飞书而扩展终端支持范围。
+- 回复状态可能暂存正文、工具参数和答案，**不是加密存储**。不要共享整个回复状态目录；清理前先禁用并停止桥接，详见 [SECURITY.md](SECURITY.md)。
 
 ```sh
 dev-notify reply stop    # 停止当前桥接；保留授权，后续事件可重新启动
@@ -148,14 +168,31 @@ dev-notify language zh    # 保存为中文；en 为英文
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
 | `TELEGRAM_CHAT_ID`／`TELEGRAM_CHAT_IDS` | 单个／逗号分隔的接收人 |
 | `FEISHU_WEBHOOK` | 飞书中国站自定义机器人 Webhook |
-| `FEISHU_SECRET` | 可选签名密钥 |
+| `FEISHU_SECRET` | Webhook 模式可选签名密钥 |
+| `FEISHU_APP_ID`／`FEISHU_APP_SECRET` | 飞书自建应用 App ID／App Secret（`app` 模式） |
+| `FEISHU_OPEN_IDS` | 飞书应用接收人的 `open_id`，多个用逗号分隔 |
 | `DEV_NOTIFY_LANG` | 当前环境语言，`zh` 或 `en` |
 | `DEV_NOTIFY_HOME` | 本工具配置与数据根目录 |
 | `CLAUDE_CONFIG_DIR` | Claude Code 配置目录 |
 
 Windows 还可用 `APPDATA`／`LOCALAPPDATA` 覆盖默认根目录；Linux 辅助路径可用 `XDG_CONFIG_HOME`／`XDG_STATE_HOME`。
 
-凭据和接收人环境变量显式存在时优先，**空值也会覆盖**。接收人变量会完全替换文件名单；两种接收人变量同时存在时合并去重。大整数 chat_id 请用字符串。配置中的 `token_env`、`webhook_env`、`secret_env` 可指定自定义变量名。不要将 Token、Webhook 或签名密钥直接写入 JSON。
+凭据和接收人环境变量显式存在时优先，**空值也会覆盖**，不会回退旧值。接收人变量会完全替换文件名单；Telegram 的 `TELEGRAM_CHAT_ID` 与 `TELEGRAM_CHAT_IDS` 同时存在时合并去重。大整数 chat_id 请用字符串。飞书 `FEISHU_OPEN_IDS` 完全替换 `feishu.open_ids`，显式空值即空收件人名单，不保留文件中的用户，也不沿用旧授权。
+
+配置中的 `token_env`、`webhook_env`、`secret_env` 以及飞书的 `app_id_env`、`app_secret_env` 可指定自定义凭据变量名。JSON **禁止明文凭据**：不要写入 Token、Webhook、签名密钥、App ID 或 App Secret；向导只保存系统 keyring 引用，自动化配置使用环境变量名。
+
+例如，将下列字段合入配置中的 `feishu` 对象，并在运行环境中设置应用凭据（不要把真实凭据填入此示例）：
+
+```json
+"feishu": {
+  "mode": "app",
+  "app_id_env": "FEISHU_APP_ID",
+  "app_secret_env": "FEISHU_APP_SECRET",
+  "open_ids": ["ou_example"]
+}
+```
+
+省略 `feishu.mode` 时仍使用 `webhook`；设置应用凭据不会自动切换模式。收件人配置不等于回复授权，修改后请用同一配置运行 `reply setup` 核对授权。
 
 语言优先级：`--lang zh|en` > `DEV_NOTIFY_LANG` > 配置 `language` > 默认中文。
 
@@ -209,7 +246,9 @@ dev-notify reply status
 
 `reply status` 标注为“保留的失败”的信息不是新的失败事件；若当前已就绪，不要仅凭历史失败重启桥接。
 
-- **没有回复按钮**：确认已授权、桥接就绪、hooks 实际加载，并在目标会话正常提交一次新任务；会话无法核验时不会开放输入。
+- **没有回复入口**：确认已授权、所选回复渠道正确、桥接就绪、hooks 实际加载，并在目标会话正常提交一次新任务；会话无法核验时不会开放输入。飞书应用模式使用引用消息，不依赖卡片按钮。
+- **飞书发出通知但回复无效**：确认 `mode` 为 `app`、`reply setup` 选择了飞书、发件人 `open_id` 已获授权且仍在有效接收人名单中；必须在机器人私聊中引用对应的完成／题目／权限消息并发送文本。Webhook 不能接收回复。
+- **飞书收不到入站事件**：核对机器人能力、长连接模式、`im.message.receive_v1`、发送／私聊接收权限、应用版本发布及可用范围；确认应用没有其他消费者分流。运行 `reply status`，不要以再启动一个消费者作为修复。
 - **只有一个渠道收到**：检查该次通知的渠道错误。各渠道独立投递；失败消息不会因后来恢复而自动补发。
 - **更新后入口不可用**：核对 `dev-notify --version` 和当前 Node 环境，重新安装 hooks；不要仅凭 hooks 条目存在认定可用。
 - **权限或锁错误**：先检查目录所有者、访问权限及是否仍有进程运行，不要一律删除锁或用 `sudo`／管理员身份重跑。

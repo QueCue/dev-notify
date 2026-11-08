@@ -6,10 +6,11 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { appPaths, ConfigError, readConfigLanguage, type Env } from './config.js';
 import { resolveLocale, setLocale, t } from './i18n.js';
-import { accessReplies, atomicJson, readJson, replyDirectory, stateTransaction, type ReplyAccess } from './reply-state.js';
+import { accessReplies, atomicJson, readJson, replyDirectory, stateTransaction, replyChannel, digest, type ReplyAccess } from './reply-state.js';
 import { telegramApi, type TelegramApi } from './reply-telegram.js';
 import { acquireBotLock, processState } from './reply-lock.js';
-import { drainReplies, processUpdate } from './reply-engine.js';
+import { drainReplies, drainFeishuInbox, processUpdate } from './reply-engine.js';
+import { feishuClient, feishuReplyApi, enqueueFeishuMessage, type FeishuFactory } from './reply-feishu.js';
 import { drainInteractionFeedback } from './reply-outcomes.js';
 import { CONNECTION_RESET_RETRY_DELAYS, saveBridgeFailure, safeFailureReason, TelegramConnectionResetError, isBridgeDiagnosticStage, type BridgeDiagnosticStage } from './notification-diagnostics.js';
 /** 两种初始化查询合计的 reset 重试上限。 */
@@ -62,9 +63,14 @@ function statusOf(lease: Lease | null): { running: boolean; ready: boolean; erro
   const fresh = !!lease && Number.isFinite(lease.updated) && Date.now() - lease.updated < 30000 && lease.updated <= Date.now() + 10000;
   return { running, ready: lease?.ready === true && running && fresh && !lease.error && processState(lease.pid) === 'alive', error: lease?.error };
 }
-export async function bridgeStatus(file: string): Promise<{ running: boolean; ready: boolean; error?: string; problem?: BridgeProblem }> {
+function leaseMatches(lease: Lease | null, access: ReplyAccess): boolean {
+  return !!lease && (lease.identity ? lease.identity === access.identity : replyChannel(access) === 'telegram');
+}
+export async function bridgeStatus(file: string, access?: ReplyAccess): Promise<{ running: boolean; ready: boolean; error?: string; problem?: BridgeProblem }> {
   const lease = await readJson(leasePath(file)) as Lease | null;
-  const status = statusOf(lease), problem = !status.ready && lease?.error ? leaseProblem(lease.problem) : undefined;
+  const status = statusOf(lease);
+  if (access && !leaseMatches(lease, access)) status.ready = false;
+  const problem = !status.ready && lease?.error ? leaseProblem(lease.problem) : undefined;
   return { ...status, ...(problem ? { problem } : {}) };
 }
 export async function bridgeBotUsername(file: string, identity: string): Promise<string | null> {
@@ -113,7 +119,11 @@ async function startBridgeAttempt(file: string, env: Env, deps: BridgeStartDepen
   attempt.stage = 'lease-read';
   const previous = await readJson(leasePath(file)) as Lease | null;
   const existing = statusOf(previous);
-  if (existing.running) { if (!existing.ready) attempt.stage = 'existing-unready'; return existing.ready; }
+  if (existing.running) {
+    const ready = existing.ready && leaseMatches(previous, access);
+    if (!ready) attempt.stage = 'existing-unready';
+    return ready;
+  }
   attempt.stage = 'runtime-paths';
   const node = await realpath(process.execPath), cli = await realpath(fileURLToPath(new URL('./cli.js', import.meta.url)));
   // 无 shell、无命令行秘密、无系统开机自启；worker 自己持有排他锁。
@@ -130,7 +140,7 @@ async function startBridgeAttempt(file: string, env: Env, deps: BridgeStartDepen
   for (let waitAttempt = 0; waitAttempt < 100; waitAttempt++) {
     await (deps.sleep ?? delay)(150);
     const lease = await readJson(leasePath(file)) as Lease | null;
-    if (statusOf(lease).ready) return true;
+    if (statusOf(lease).ready && leaseMatches(lease, access)) return true;
     if (failed || exited || lease?.pid === child.pid && lease?.owner !== previous?.owner && lease?.error) {
       attempt.stage = failed ? 'spawn-error' : exited ? 'child-exit' : 'worker-error';
       // 只采用本次子进程的新租约，不拿历史 worker 失败冒充当前启动原因。
@@ -145,6 +155,7 @@ export interface BridgeOptions {
   env?: Env;
   lang?: string;
   api?: (access: ReplyAccess) => TelegramApi;
+  feishuFactory?: FeishuFactory;
   sleep?: (ms: number) => Promise<unknown>;
   stopped?: () => boolean;
   maxIterations?: number;
@@ -171,7 +182,8 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const botDirectory = path.join(appPaths(process.platform, env).data, 'reply-bots');
   await mkdir(botDirectory, { recursive: true, mode: 0o700 });
-  const lockPath = path.join(botDirectory, access.policy.bot + '.lock');
+  const lockKey = replyChannel(access) === 'feishu' ? digest(JSON.stringify(['feishu', access.config.feishu.appId])) : access.policy.bot;
+  const lockPath = path.join(botDirectory, lockKey + '.lock');
   const owner = randomBytes(16).toString('hex');
   attempt.stage = 'bot-lock';
   const lock = await acquireBotLock(lockPath, owner);
@@ -203,6 +215,40 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
       void saveLease().catch(() => { heartbeatFailed = true; stopping = true; }).finally(() => { beating = false; });
     }, heartbeatMs);
     heartbeat.unref();
+    if (replyChannel(access) === 'feishu') {
+      const client = feishuClient(access.config, {
+        onMessage: async event => {
+          const current = await fresh();
+          if (!current || current.identity !== access.identity) return;
+          await enqueueFeishuMessage(current, event);
+        },
+        onError: () => { log(t('feishu.failed')); },
+      }, options.feishuFactory);
+      try {
+        attempt.stage = 'ready';
+        await client.start();
+        lease.ready = client.state === 'connected'; lease.identity = access.identity; await saveLease();
+        const api = options.api?.(access) ?? feishuReplyApi(access.config, client);
+        let iteration = 0;
+        while (!await isStopped() && iteration++ < (options.maxIterations ?? Infinity)) {
+          setLocale(resolveLocale(options.lang, env, await readConfigLanguage(file)));
+          const current = await fresh();
+          if (!current || current.identity !== access.identity) break;
+          access = current;
+          lease.ready = client.state === 'connected'; await saveLease();
+          if (client.state === 'failed' || client.state === 'stopped') throw new ConfigError(t('feishu.failed'));
+          const context = { api, fresh, validate: options.validate, inject: options.inject };
+          attempt.stage = 'polling';
+          try { await drainFeishuInbox(access, context); }
+          catch { log(t('reply.handleFailedLog')); }
+          await drainReplies(access, context);
+          await drainInteractionFeedback(access, api, fresh, log);
+          await (options.sleep ?? delay)(250);
+        }
+        if (heartbeatFailed) throw new ConfigError(t('reply.bridgeFailed'));
+      } finally { client.stop(); }
+      return;
+    }
     let api = (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
     let initializationRetries = 0;
     const initialize = async (method: 'getWebhookInfo' | 'getMe'): Promise<any> => {
@@ -244,7 +290,7 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
       }
     }
     attempt.stage = 'ready';
-    lease.ready = true; await saveLease();
+    lease.identity = access.identity; lease.ready = true; await saveLease();
     attempt.stage = 'polling';
     let iteration = 0, failures = 0;
     while (!await isStopped() && iteration++ < (options.maxIterations ?? Infinity)) {

@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { t } from './i18n.js';
 
 export const SERVICE = 'dev-notify.node.credentials.v1';
-export interface Bundle { telegram_token?: string; feishu_webhook?: string; feishu_secret?: string }
+export interface Bundle { telegram_token?: string; feishu_webhook?: string; feishu_secret?: string; feishu_app_id?: string; feishu_app_secret?: string }
 export interface Reference { backend: 'keyring' | 'system'; id: string }
 export interface Store {
   read(id: string): Bundle | null;
@@ -11,7 +11,7 @@ export interface Store {
   remove(id: string): void;
 }
 export class CredentialError extends Error {}
-const fields = ['telegram_token', 'feishu_webhook', 'feishu_secret'];
+const fields = ['telegram_token', 'feishu_webhook', 'feishu_secret', 'feishu_app_id', 'feishu_app_secret'];
 export function validateId(id: string): void {
   if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw new CredentialError(t('credentials.invalidReference'));
 }

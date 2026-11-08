@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
-import { stateTransaction, targetEpoch, type Entry, type Interaction, type Question, type ReplyAccess, type SessionTarget } from './reply-state.js';
+import { stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, type Entry, type Interaction, type Question, type ReplyAccess, type SessionTarget } from './reply-state.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
 import { finishInteraction } from './reply-outcomes.js';
 
@@ -63,13 +63,13 @@ export function interactionMarkup(value: Interaction): Record<string, any> {
   buttons.push([{ text: t('reply.closeRemote'), callback_data: prefix + 'l' }]);
   return { inline_keyboard: buttons };
 }
-export function interactionContent(value: Interaction): string {
+export function interactionContent(value: Interaction, feishu = false): string {
   if (value.kind === 'permission') return t('reply.toolLabel', { tool: String(value.input.tool_name || t('reply.unknownTool')) }) + '\n\n' + JSON.stringify(value.input.tool_input ?? {}, null, 2)
-    + '\n\n' + t('reply.permissionNote');
+    + '\n\n' + t('reply.permissionNote') + (feishu ? t('feishu.permissionHint') : '');
   const q = value.questions[value.index];
   return t('reply.questionHeading', { index: value.index + 1, total: value.questions.length, question: q.question }) + '\n\n'
     + q.options.map((o, i) => `${i + 1}. ${o.label}\n${o.description}${(o as any).preview ? '\n' + (o as any).preview : ''}`).join('\n\n')
-    + (q.multiSelect ? t('reply.multiSelectHint') : t('reply.singleSelectHint'))
+    + (feishu ? t('feishu.questionHint') : q.multiSelect ? t('reply.multiSelectHint') : t('reply.singleSelectHint'))
     + t('reply.localWindowNote');
 }
 // 飞书卡片没有回调按钮，只展示全部题目和跳转入口；逐题编号并空行分隔，避免题目与选项粘连。
@@ -82,6 +82,20 @@ export function questionsContent(questions: Question[]): string {
 export async function showInteraction(access: ReplyAccess, id: string, chat: string, api: TelegramApi): Promise<void> {
   const value = await stateTransaction(access, state => state.requests[id]);
   if (!active(value)) { await replyHint(api, chat, t('reply.inactiveTitle'), t('reply.inactiveBody')); return; }
+  if (replyChannel(access) === 'feishu') {
+    const sent = await replyHint(api, chat, t('hook.notificationTitle'), interactionContent(value, true));
+    const ids = sent?.message_ids ?? [sent?.message_id];
+    if (!Array.isArray(ids) || !ids.length || !ids.every(validMessageId)) throw new ConfigError(t('reply.noInteractionMessageId'));
+    await stateTransaction(access, state => {
+      const current = state.requests[id];
+      if (!current) return;
+      for (const message of ids) {
+        state.entries[messageKey(access, chat, message)] = { session: value.session, epoch: value.epoch, request: id, question: value.index, updated: Date.now() };
+        (current.messages ??= []).push({ chat, message });
+      }
+    });
+    return;
+  }
   // 使用通知分段器发送较长选项，所有选项正文保留，只有最后一段附选择按钮。
   const { makePlan, deliver } = await import('./channels.js');
   const { config } = access;
@@ -172,21 +186,42 @@ export async function handleInteractionCallback(access: ReplyAccess, callback: a
   return true;
 }
 export async function handleInteractionText(access: ReplyAccess, id: string, chat: string, message: any, api: TelegramApi): Promise<void> {
-  const text = message.text;
+  const text: string = message.text;
   if (!text.trim() || Array.from(text).length > 4000) { await replyHint(api, chat, t('reply.answerInvalidTitle'), t('reply.answerInvalidBody'), message.message_id); return; }
   const outcome = await stateTransaction(access, state => {
     const value = state.requests[id], target = value && state.sessions[value.session];
-    const entry = state.entries[`tg:${chat}:${message.reply_to_message.message_id}`];
+    const entry = state.entries[messageKey(access, chat, message.reply_to_message.message_id)];
     if (!active(value) || !target || target.unverified === true || targetEpoch(target) !== value.epoch || entry?.question !== value.index) return 'expired';
     const question = value.questions[value.index]?.question;
+    const feishu = replyChannel(access) === 'feishu';
+    const command = text.trim();
+    if (feishu && command === '/close') {
+      finishInteraction(value, { kind: 'not-applied', reason: 'closed', text: t('reply.closedLocal') });
+      return 'closed';
+    }
+    let submitted = text;
     if (value.kind === 'permission') {
       if (access.policy.permissions !== true) return 'expired';
-      value.response = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: text } } };
-    } else answer(value, text);
+      submitted = feishu && command === '/allow' ? 'allow' : 'deny';
+      value.response = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: {
+        behavior: submitted, ...(submitted === 'deny' && !(feishu && command === '/deny') ? { message: text } : {}) } } };
+    } else {
+      const q = value.questions[value.index];
+      if (feishu && /^\d+(?:\s*,\s*\d+)*$/.test(command)) {
+        const indexes = [...new Set(command.split(',').map(v => Number(v.trim()) - 1))];
+        if ((!q.multiSelect && indexes.length !== 1) || indexes.some(i => !q.options[i])) return 'invalid';
+        submitted = indexes.map(i => q.options[i].label).join(',');
+      }
+      answer(value, submitted);
+    }
     (value.receipts ??= []).push({ id: `text:${chat}:${message.message_id}`, chat, message: message.message_id,
-      question, answer: value.kind === 'question' ? text : 'deny', custom: true });
+      question, answer: submitted, custom: true });
     return value.response ? 'done' : 'next';
   });
+  if (outcome === 'invalid' || outcome === 'closed') {
+    await replyHint(api, chat, t(outcome === 'closed' ? 'reply.callbackClosed' : 'reply.answerInvalidTitle'),
+      t(outcome === 'closed' ? 'reply.closedLocal' : 'reply.answerInvalidBody')); return;
+  }
   await replyHint(api, chat, outcome === 'expired' ? t('reply.notAppliedTitle') : t('reply.pendingConfirmationTitle'),
     (outcome === 'done' ? t('reply.finalWaiting')
       : outcome === 'next' ? t('reply.nextWaiting')

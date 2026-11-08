@@ -18,7 +18,7 @@ export function telegramApi(token: string, request: Request = requestJson): Tele
     }
   };
 }
-export async function replyHint(api: TelegramApi, chat: string, title: string, content: string, replyTo?: number, markup?: unknown): Promise<any> {
+export async function replyHint(api: TelegramApi, chat: string, title: string, content: string, replyTo?: import('./reply-state.js').MessageId, markup?: unknown): Promise<any> {
   return api('sendMessage', { chat_id: chat, text: title + '\n\n' + content,
     ...(replyTo ? { reply_parameters: { message_id: replyTo } } : {}), ...(markup ? { reply_markup: markup } : {}) });
 }

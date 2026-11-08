@@ -140,7 +140,7 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
       if (required && !value) { out(t('setup.requiredBlank')); continue; }
       try {
         const check: RawConfig = { telegram: { enabled: key === 'telegram_token', chat_ids: ['1'] },
-          feishu: { enabled: key !== 'telegram_token' }, credentials: { backend: 'keyring', id: '0'.repeat(32) } };
+          feishu: { enabled: key !== 'telegram_token', ...(key.startsWith('feishu_app_') ? { mode: 'app' } : {}) }, credentials: { backend: 'keyring', id: '0'.repeat(32) } };
         parseConfig(check, {}, () => ({ [key]: value }));
         return value;
       } catch { out(t('setup.invalidFormat')); }
@@ -190,8 +190,26 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
     }
   }
   if (data.feishu.enabled) {
-    values.feishu_webhook = await readValue(t('setup.labelFeishuWebhook'), 'feishu_webhook', true);
-    values.feishu_secret = await readValue(t('setup.labelFeishuSecret'), 'feishu_secret', false);
+    const current = data.feishu.mode === 'app' ? '2' : '1';
+    const mode = (await prompts.text(t('feishu.modePrompt', { current }))).trim() || current;
+    if (!['1', '2'].includes(mode)) return false;
+    if (mode === '2') {
+      data.feishu.mode = 'app';
+      values.feishu_app_id = await readValue('Feishu App ID', 'feishu_app_id', true);
+      values.feishu_app_secret = await readValue('Feishu App Secret', 'feishu_app_secret', true);
+      while (true) {
+        const entered = await prompts.text(t('feishu.idsPrompt'));
+        const ids = entered.trim() ? entered.split(',').map(v => v.trim()) : data.feishu.open_ids ?? [];
+        if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string' || !/^ou_[A-Za-z0-9_-]+$/.test(id))) {
+          out(t('feishu.invalidConfig')); continue;
+        }
+        data.feishu.open_ids = [...new Set(ids)]; break;
+      }
+    } else {
+      delete data.feishu.mode;
+      values.feishu_webhook = await readValue(t('setup.labelFeishuWebhook'), 'feishu_webhook', true);
+      values.feishu_secret = await readValue(t('setup.labelFeishuSecret'), 'feishu_secret', false);
+    }
   }
   encodeBundle(values);
   const preview = { ...data, credentials: { backend: 'keyring', id: '0'.repeat(32) } };
@@ -202,7 +220,8 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
   out(t('setup.channelsEnabled', { channels: joinList(channels) }));
   out(t('setup.envPriority'));
   const overrides = [data.telegram.token_env ?? 'TELEGRAM_BOT_TOKEN', data.feishu.webhook_env ?? 'FEISHU_WEBHOOK',
-    data.feishu.secret_env ?? 'FEISHU_SECRET', 'TELEGRAM_CHAT_ID', 'TELEGRAM_CHAT_IDS'].filter(name => Object.hasOwn(env, name));
+    data.feishu.secret_env ?? 'FEISHU_SECRET', data.feishu.app_id_env ?? 'FEISHU_APP_ID',
+    data.feishu.app_secret_env ?? 'FEISHU_APP_SECRET', 'FEISHU_OPEN_IDS', 'TELEGRAM_CHAT_ID', 'TELEGRAM_CHAT_IDS'].filter(name => Object.hasOwn(env, name));
   if (overrides.length) out(t('setup.envOverrides', { names: joinList(overrides) }));
   if (reference?.backend === 'keyring') out(t('setup.oldDeleteWarning'));
   out(t('setup.disabledChannels'));
@@ -227,7 +246,8 @@ export async function wizard(file: string, options: SetupOptions = {}): Promise<
     }
   }
   try {
-    if (ready(parseConfig(preview, env, () => values), 'telegram')) {
+    const effective = parseConfig(preview, env, () => values);
+    if (ready(effective, 'telegram') || effective.feishu.mode === 'app' && ready(effective, 'feishu')) {
       out(t('setup.replyHint'));
     }
   } catch { /* 环境覆盖无效时上方测试分支已报告。 */ }

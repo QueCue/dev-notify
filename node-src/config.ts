@@ -18,7 +18,7 @@ export interface Config {
   notifications: NotificationSettings;
   templates: TemplateSettings;
   telegram: { enabled: boolean; token: string; chatIds: string[] };
-  feishu: { enabled: boolean; webhook: string; secret: string };
+  feishu: { enabled: boolean; webhook: string; secret: string; mode?: 'app'; appId?: string; appSecret?: string; openIds?: string[] };
 }
 export const example = {
   version: 1,
@@ -123,7 +123,8 @@ export function parseConfig(input: unknown, env: Env = process.env,
     return cached[field] ?? '';
   };
   const tg = object(data.telegram ?? {}, ['enabled', 'chat_ids', 'token_env'], 'telegram');
-  const fs = object(data.feishu ?? {}, ['enabled', 'webhook_env', 'secret_env'], 'feishu');
+  const fs = object(data.feishu ?? {}, ['enabled', 'mode', 'webhook_env', 'secret_env', 'app_id_env', 'app_secret_env', 'open_ids'], 'feishu');
+  if (fs.mode !== undefined && fs.mode !== 'webhook' && fs.mode !== 'app') throw new ConfigError(t('feishu.invalidConfig'));
   const tgEnabled = enabled(tg), fsEnabled = enabled(fs);
   let ids: unknown = tg.chat_ids ?? [];
   if (Object.hasOwn(env, 'TELEGRAM_CHAT_ID') || Object.hasOwn(env, 'TELEGRAM_CHAT_IDS')) {
@@ -138,7 +139,7 @@ export function parseConfig(input: unknown, env: Env = process.env,
   }))];
   const token = secret(tg, 'token_env', 'TELEGRAM_BOT_TOKEN', env, () => stored('telegram_token'));
   if (token && !/^[0-9]+:[A-Za-z0-9_-]+$/.test(token)) throw new ConfigError(t('config.telegramToken'));
-  const webhook = secret(fs, 'webhook_env', 'FEISHU_WEBHOOK', env, () => stored('feishu_webhook'));
+  const webhook = fs.mode === 'app' ? '' : secret(fs, 'webhook_env', 'FEISHU_WEBHOOK', env, () => stored('feishu_webhook'));
   if (webhook) {
     let valid = false;
     try {
@@ -147,13 +148,23 @@ export function parseConfig(input: unknown, env: Env = process.env,
     } catch { /* 不输出含秘密的 URL 异常。 */ }
     if (!valid) throw new ConfigError(t('config.feishuWebhook'));
   }
+  let app: Partial<Config['feishu']> = {};
+  if (fs.mode === 'app') {
+    const appId = secret(fs, 'app_id_env', 'FEISHU_APP_ID', env, () => stored('feishu_app_id'));
+    const appSecret = secret(fs, 'app_secret_env', 'FEISHU_APP_SECRET', env, () => stored('feishu_app_secret'));
+    if (appId && !/^cli_[0-9a-fA-F]{16}$/.test(appId)) throw new ConfigError(t('feishu.invalidConfig'));
+    const ids = Object.hasOwn(env, 'FEISHU_OPEN_IDS') ? (env.FEISHU_OPEN_IDS ?? '').split(',').map(v => v.trim()).filter(Boolean) : fs.open_ids ?? [];
+    if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !/^ou_[A-Za-z0-9_-]+$/.test(id))) throw new ConfigError(t('feishu.invalidConfig'));
+    app = { mode: 'app', appId, appSecret, openIds: [...new Set(ids as string[])] };
+  }
   return { language, notifications: notificationSettings(data.notifications), templates: templateSettings(data.templates),
     telegram: { enabled: tgEnabled, token, chatIds }, feishu: { enabled: fsEnabled, webhook,
-    secret: secret(fs, 'secret_env', 'FEISHU_SECRET', env, () => stored('feishu_secret')) } };
+    secret: fs.mode === 'app' ? '' : secret(fs, 'secret_env', 'FEISHU_SECRET', env, () => stored('feishu_secret')), ...app } };
 }
 export function ready(config: Config, channel: 'telegram' | 'feishu'): boolean {
   return channel === 'telegram' ? config.telegram.enabled && !!config.telegram.token && !!config.telegram.chatIds.length
-    : config.feishu.enabled && !!config.feishu.webhook;
+    : config.feishu.enabled && (config.feishu.mode === 'app'
+      ? !!config.feishu.appId && !!config.feishu.appSecret && !!config.feishu.openIds?.length : !!config.feishu.webhook);
 }
 export function decodeUtf8(data: Uint8Array): string {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(data); }

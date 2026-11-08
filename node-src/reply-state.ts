@@ -9,18 +9,24 @@ import { replyHooksReady } from './claude-code.js';
 
 export const TTL = 24 * 60 * 60 * 1000;
 export const digest = (text: string) => createHash('sha256').update(text).digest('hex');
-export const botKey = (config: Config) => digest(config.telegram.token);
-export interface ReplyPolicy { version: 1; enabled: boolean; bot: string; users: string[]; generation: string; permissions?: boolean }
+export type ReplyChannel = 'telegram' | 'feishu';
+export const replyChannel = (access: ReplyAccess): ReplyChannel => access.policy.channel ?? 'telegram';
+export const botKey = (config: Config, channel: ReplyChannel = 'telegram') => channel === 'feishu'
+  ? digest(JSON.stringify(['feishu', config.feishu.appId, config.feishu.appSecret])) : digest(config.telegram.token);
+export type MessageId = number | string;
+export const validMessageId = (id: unknown): id is MessageId => typeof id === 'number' ? Number.isSafeInteger(id) && id > 0 : typeof id === 'string' && /^om_[A-Za-z0-9_-]+$/.test(id);
+export const messageKey = (access: ReplyAccess, chat: string, id: MessageId) => `${replyChannel(access) === 'feishu' ? 'fs' : 'tg'}:${chat}:${id}`;
+export interface ReplyPolicy { version: 1; enabled: boolean; bot: string; users: string[]; generation: string; permissions?: boolean; channel?: ReplyChannel }
 export interface SessionTarget { session: string; pid: number; birth: string; tty: string; title: string; cwd: string; updated: number; working: boolean; tracked?: boolean; latestCall?: string; unverified?: boolean }
 export const targetEpoch = (target: SessionTarget) => digest(JSON.stringify([target.session, target.pid, target.birth, target.tty]));
 export interface Entry { session: string; epoch: string; updated: number; request?: string; question?: number }
 export interface Pending { hash: string; id: string; epoch: string; updated: number; queued: boolean;
-  text?: string; chat: string; message: number; phase: 'queued' | 'submitted' | 'unknown' }
+  text?: string; chat: string; message: MessageId; phase: 'queued' | 'submitted' | 'unknown' }
 export interface Question { question: string; header: string; multiSelect: boolean; options: { label: string; description: string }[] }
 export type InteractionEndReason = 'processed' | 'expired' | 'session' | 'switched' | 'closed' | 'failed';
 export interface InteractionResult { kind: 'applied' | 'not-applied' | 'unknown'; text: string; reason?: InteractionEndReason }
 export interface InteractionReceipt {
-  id: string; chat: string; message: number; question?: string; answer: string; custom?: boolean;
+  id: string; chat: string; message: MessageId; question?: string; answer: string; custom?: boolean;
   result?: InteractionResult; delivery?: 'sending' | 'sent' | 'unknown';
 }
 export interface ToolCall {
@@ -33,13 +39,15 @@ export interface Interaction {
   answers: Record<string, string>; selected: number[]; index: number;
   response?: Record<string, any>; claimed?: boolean;
   call?: string; result?: InteractionResult; receipts?: InteractionReceipt[];
-  messages?: { chat: string; message: number; cleared?: boolean }[];
+  messages?: { chat: string; message: MessageId; cleared?: boolean }[];
   notified?: { telegram?: string[]; feishu?: string };
 }
 export interface ReplyState {
   version: 1; identity: string; offset: number; sessions: Record<string, SessionTarget>;
   entries: Record<string, Entry>; pending: Record<string, Pending>; requests: Record<string, Interaction>;
   calls: Record<string, ToolCall>;
+  feishuInbox?: Record<string, import('./reply-feishu.js').FeishuInboxMessage>;
+  feishuSeen?: Record<string, number>;
 }
 export interface ReplyAccess { policy: ReplyPolicy; config: Config; identity: string; file: string }
 export const policyPath = (config: string) => config + '.reply.json';
@@ -76,14 +84,14 @@ export async function atomicJson(file: string, value: unknown): Promise<void> {
     await replaceStateFile(temporary, file);
   } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
-export async function locked<T>(file: string, work: () => Promise<T>): Promise<T> {
+export async function locked<T>(file: string, work: () => Promise<T>, attempts = 100): Promise<T> {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   let handle;
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try { handle = await open(file, 'wx', 0o600); break; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new ConfigError(t('reply.lockUnavailable'));
-      if (attempt === 99) throw new ConfigError(t('reply.lockBusy'));
+      if (attempt === attempts - 1) throw new ConfigError(t('reply.lockBusy'));
       await delay(40);
     }
   }
@@ -93,36 +101,47 @@ export async function locked<T>(file: string, work: () => Promise<T>): Promise<T
 export async function accessReplies(file: string, env: Env = process.env): Promise<ReplyAccess | null> {
   const policy = await readJson(policyPath(file));
   if (policy === null || policy.enabled === false) return null;
-  if (policy.version !== 1 || policy.enabled !== true || typeof policy.bot !== 'string' || !/^[a-f0-9]{64}$/.test(policy.bot)
+  const channel: ReplyChannel = policy.channel ?? 'telegram';
+  const userPattern = channel === 'feishu' ? /^ou_[A-Za-z0-9_-]+$/ : /^[1-9][0-9]*$/;
+  if (!['telegram', 'feishu'].includes(channel) || policy.version !== 1 || policy.enabled !== true || typeof policy.bot !== 'string' || !/^[a-f0-9]{64}$/.test(policy.bot)
     || typeof policy.generation !== 'string' || !/^[a-f0-9]{32}$/.test(policy.generation)
-    || !Array.isArray(policy.users) || !policy.users.length || policy.users.some((id: unknown) => typeof id !== 'string' || !/^[1-9][0-9]*$/.test(id))) {
+    || !Array.isArray(policy.users) || !policy.users.length || policy.users.some((id: unknown) => typeof id !== 'string' || !userPattern.test(id))) {
     throw new ConfigError(t('reply.invalidPolicy'));
   }
   if (!await replyHooksReady(file, { env })) throw new ConfigError(t('reply.hooksMissing'));
   const config = await loadConfig(file, true, env);
-  if (!ready(config, 'telegram') || botKey(config) !== policy.bot) throw new ConfigError(t('reply.botChanged'));
-  const users = policy.users.filter((id: string) => config.telegram.chatIds.includes(id));
+  if (!ready(config, channel) || channel === 'feishu' && config.feishu.mode !== 'app' || botKey(config, channel) !== policy.bot) throw new ConfigError(t('reply.botChanged'));
+  const recipients = channel === 'feishu' ? config.feishu.openIds ?? [] : config.telegram.chatIds;
+  const users = policy.users.filter((id: string) => recipients.includes(id));
   if (!users.length) throw new ConfigError(t('reply.usersRevoked'));
   const effective = { ...policy, users } as ReplyPolicy;
   return { file, config, policy: effective, identity: digest(JSON.stringify([policy.bot, policy.generation, users, policy.permissions === true])) };
 }
-export async function stateTransaction<T>(access: ReplyAccess, work: (state: ReplyState) => Promise<T> | T): Promise<T> {
+export async function stateTransaction<T>(access: ReplyAccess, work: (state: ReplyState) => Promise<T> | T, lockAttempts = 100): Promise<T> {
   const directory = replyDirectory(access.file);
   return locked(path.join(directory, 'state.lock'), async () => {
     const policy = await readJson(policyPath(access.file));
     if (!policy?.enabled || policy.bot !== access.policy.bot || policy.generation !== access.policy.generation
+      || (policy.channel ?? 'telegram') !== replyChannel(access)
       || (policy.permissions === true) !== (access.policy.permissions === true)) throw new ConfigError(t('reply.authorizationChanged'));
     let state = await readJson(path.join(directory, 'state.json')) as ReplyState | null;
+    const before = JSON.stringify(state);
     if (!state || state.identity !== access.identity) state = { version: 1, identity: access.identity, offset: 0, sessions: {}, entries: {}, pending: {}, requests: {}, calls: {} };
     const record = (value: unknown) => !!value && typeof value === 'object' && !Array.isArray(value);
     state.requests ??= {};
     state.calls ??= {};
     if (state.version !== 1 || !Number.isSafeInteger(state.offset) || state.offset < 0
-      || ![state.sessions, state.entries, state.pending, state.requests, state.calls].every(record)) throw new ConfigError(t('reply.invalidState'));
+      || ![state.sessions, state.entries, state.pending, state.requests, state.calls].every(record)
+      || state.feishuInbox !== undefined && !record(state.feishuInbox)
+      || state.feishuSeen !== undefined && !record(state.feishuSeen)) throw new ConfigError(t('reply.invalidState'));
     const now = Date.now();
     for (const section of [state.sessions, state.entries, state.pending, state.requests, state.calls]) for (const [key, value] of Object.entries(section)) {
       if (!record(value) || typeof value.updated !== 'number' || !Number.isFinite(value.updated)
         || value.updated > now + 60000 || now - value.updated > TTL) delete section[key];
+    }
+    for (const [key, value] of Object.entries(state.feishuInbox ?? {})) {
+      if (!record(value) || value.id !== key || typeof value.user !== 'string' || typeof value.text !== 'string'
+        || !Number.isFinite(value.created) || now - value.created > 300000 || value.created > now + 60000) delete state.feishuInbox![key];
     }
     for (const [key, value] of Object.entries(state.sessions)) {
       if (value.session !== key || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.birth !== 'string'
@@ -133,7 +152,7 @@ export async function stateTransaction<T>(access: ReplyAccess, work: (state: Rep
       if (typeof value.session !== 'string' || typeof value.epoch !== 'string') delete state.entries[key];
     }
     for (const [key, value] of Object.entries(state.pending)) {
-      if (typeof value.epoch !== 'string' || !/^[1-9][0-9]*$/.test(value.chat) || typeof value.id !== 'string'
+      if (typeof value.epoch !== 'string' || !(replyChannel(access) === 'feishu' ? /^ou_[A-Za-z0-9_-]+$/ : /^[1-9][0-9]*$/).test(value.chat) || typeof value.id !== 'string'
         || !['queued', 'submitted', 'unknown'].includes(value.phase)) delete state.pending[key];
     }
     for (const [key, value] of Object.entries(state.requests)) {
@@ -142,19 +161,27 @@ export async function stateTransaction<T>(access: ReplyAccess, work: (state: Rep
         || !Number.isFinite(value.expires)) delete state.requests[key];
     }
     const result = await work(state);
-    await atomicJson(path.join(directory, 'state.json'), state);
+    // 长连接空闲检查不反复重写状态；清理、入队和所有业务变更仍在同一锁内原子提交。
+    if (JSON.stringify(state) !== before) await atomicJson(path.join(directory, 'state.json'), state);
     return result;
-  });
+  }, lockAttempts);
 }
 export async function configureReplies(file: string, prompts: Prompts, env: Env = process.env): Promise<boolean> {
   if (!await replyHooksReady(file, { env })) throw new ConfigError(t('reply.setupHooksFirst'));
   const config = await loadConfig(file, true, env);
-  if (!ready(config, 'telegram')) throw new ConfigError(t('reply.setupTelegramFirst'));
-  const available = config.telegram.chatIds.filter(id => /^[1-9][0-9]*$/.test(id));
+  const telegram = ready(config, 'telegram'), feishu = ready(config, 'feishu') && config.feishu.mode === 'app';
+  if (!telegram && !feishu) throw new ConfigError(t('feishu.setupFirst'));
+  let channel: ReplyChannel = feishu && !telegram ? 'feishu' : 'telegram';
+  if (telegram && feishu) {
+    const selected = (await prompts.text(t('feishu.channelPrompt'))).trim() || '1';
+    if (!['1', '2'].includes(selected)) return false;
+    channel = selected === '2' ? 'feishu' : 'telegram';
+  }
+  const available = channel === 'feishu' ? config.feishu.openIds ?? [] : config.telegram.chatIds.filter(id => /^[1-9][0-9]*$/.test(id));
   if (!available.length) throw new ConfigError(t('reply.setupPrivateOnly'));
   const before = await readJson(policyPath(file));
   prompts.out(t('reply.setupNoticeInput'));
-  prompts.out(t('reply.setupNoticeBridge'));
+  prompts.out(t(channel === 'feishu' ? 'feishu.setupNotice' : 'reply.setupNoticeBridge'));
   prompts.out(t('reply.setupNoticePlatform'));
   prompts.out(t('reply.setupNoticeUnsupported'));
   prompts.out(t('reply.setupAvailable', { users: joinList(available) }));
@@ -169,8 +196,10 @@ export async function configureReplies(file: string, prompts: Prompts, env: Env 
   await locked(policyPath(file) + '.lock', async () => {
     if (JSON.stringify(before) !== JSON.stringify(await readJson(policyPath(file)))) throw new ConfigError(t('reply.setupChanged'));
     const effective = await loadConfig(file, true, env);
-    if (botKey(effective) !== botKey(config) || users.some(id => !effective.telegram.chatIds.includes(id))) throw new ConfigError(t('reply.setupConfigChanged'));
-    await atomicJson(policyPath(file), { version: 1, enabled: true, bot: botKey(config), users, permissions, generation: randomBytes(16).toString('hex') } satisfies ReplyPolicy);
+    const recipients = channel === 'feishu' ? effective.feishu.openIds ?? [] : effective.telegram.chatIds;
+    if (!ready(effective, channel) || botKey(effective, channel) !== botKey(config, channel) || users.some(id => !recipients.includes(id))) throw new ConfigError(t('reply.setupConfigChanged'));
+    await atomicJson(policyPath(file), { version: 1, enabled: true, bot: botKey(config, channel), users, permissions,
+      ...(channel === 'feishu' ? { channel } : {}), generation: randomBytes(16).toString('hex') } satisfies ReplyPolicy);
   });
   prompts.out(t('reply.setupSaved'));
   return true;

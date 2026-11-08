@@ -2,6 +2,35 @@
 
 English | [简体中文](CHANGELOG.md)
 
+## Unreleased
+
+No changes yet.
+
+## 0.3.0 — 2026-11-08
+
+Add two-way communication through Feishu self-built apps, using npm `latest` for the stable release. Preserve Telegram and default Webhook notification compatibility, with one remote reply channel per configuration. Actual publication status is authoritative on the npm registry.
+
+### Additions and compatibility
+
+- Change the standard npm runtime dependency `@quecue/notify-core` to `^0.2.0` and reuse its Feishu self-built app client, without embedding the library or linking sibling source.
+- Keep the default `feishu.mode: "webhook"` for one-way notifications and add explicit `feishu.mode: "app"` for self-built app bots. Preserve the existing Webhook + Telegram reply path; Feishu is no longer described as always requiring a jump to Telegram.
+- Add Feishu mode selection to `setup`. App ID/App Secret use hidden input and system keyring storage or `FEISHU_APP_ID`/`FEISHU_APP_SECRET`, with custom variable names via `app_id_env`/`app_secret_env`. Plaintext app credentials are forbidden in configuration JSON; credential failures never fall back to plaintext.
+- Use `feishu.open_ids` for app recipients, completely replaced by `FEISHU_OPEN_IDS` when present. An explicitly empty variable clears the effective list without falling back to file recipients or inheriting old authorization.
+- When both channels are available, `reply setup` selects Telegram or Feishu, with only one reply channel authorized per configuration. Management continues to use `reply start`/`reply status`/`reply stop`.
+- Feishu accepts only p2p user text messages from explicitly authorized `open_id` values in the current notification list, rejecting groups, bots, non-text content, and unauthorized input. Continuing a session requires quoting its task completion notification. Answer questions by quoting the question message and entering one option number, comma-separated multi-select numbers, or custom text. Card-action callbacks are unsupported.
+- Tool permissions still require an additional opt-in. Quote a Feishu permission message and enter `/allow` to allow once, `/deny` to deny, or `/close` to close remote handling and return control to the local UI; other text is only a denial reason. Questions and permission decisions reuse official PermissionRequest `hookSpecificOutput` control JSON, without terminal injection or permanent approval rules.
+- Feishu WebSocket reception only validates, deduplicates by event/message identifiers, and durably enqueues. A worker revalidates authorization and processes events, reusing session epochs, queueing during work, cancellation by new local input, anti-replay, and the distinction between forwarded and actually received input. Platform limits are unchanged; submitted or unknown-result operations are not resent.
+- Run only one reply bridge per Feishu app. Multiple long-connection consumers split events rather than broadcasting; starting a second consumer is not a troubleshooting fix. Self-built apps require bot capability, long-connection subscription to `im.message.receive_v1`, `im:message:send_as_bot` and `im:message.p2p_msg:readonly`, a published version, and an availability scope. No public endpoint is needed.
+- Synchronize Chinese and English READMEs for user configuration, quoted replies, and necessary troubleshooting, and SECURITY documents for credentials, authorization, and unencrypted sensitive state. Keep development and verification records in this section.
+
+### Offline test content and pending verification
+
+- Added offline test content includes Feishu modes and environment precedence (including explicitly empty overrides), rejection of plaintext app credentials, wizard keyring references and credential preservation during repeated setup, app recipients, and single-reply-channel authorization.
+- Inbound/worker offline test content includes event/message deduplication and durable queueing, rejection of unauthorized/group/bot/non-text input, quoted-message routing, option numbers and custom answers, permission commands and denial-only arbitrary text, session epochs/revocation/queue cancellation, and no replay of unknown results. Additional content covers bridge readiness/failure cleanup/stopping, segment mappings, and partial delivery failures. Retain regression content for the Webhook + Telegram compatibility path.
+- Full offline regression on Windows x64 / Node 24.12.0 / npm 11.6.2: 407 tests, 406 passed, 0 failed, and 1 explicit native-credential test skipped; the 20 new Feishu-specific tests passed. Strict TypeScript build and `npm pack --dry-run` passed.
+- On 2026-11-08, the user confirmed a real Feishu normal-reply round trip in the current Windows / Node 24.12.0 environment: completion notification delivered → quoted reply sent → input received by the current Claude session → Feishu received the receipt confirmation and the next completion notification. This is user-confirmed field validation, not an automated test result.
+- Feishu question/tool-permission answering, the macOS Feishu app path, and connection-loss/reconnection scenarios still lack field acceptance. One normal-reply round trip does not validate every interaction, failure mode, or platform.
+
 ## 0.2.8 — 2026-11-08
 
 Consolidates the delivery diagnostics and connection-reset mitigations from `0.2.8-beta.0` through `beta.2` and updates npm `latest` as a stable release; functional code is identical to `0.2.8-beta.2`.

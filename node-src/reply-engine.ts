@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
-import { digest, targetEpoch, stateTransaction, TTL, type ReplyAccess, type Entry, type SessionTarget } from './reply-state.js';
+import { digest, targetEpoch, stateTransaction, TTL, messageKey, validMessageId, replyChannel, type ReplyAccess, type Entry, type SessionTarget } from './reply-state.js';
 import { handleInteractionCallback, handleInteractionText, showInteraction } from './reply-interactions.js';
 import { injectReply, sanitizeReply, validateTarget, SessionLookupError } from './reply-platform.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
@@ -60,7 +60,7 @@ export async function processUpdate(access: ReplyAccess, update: any, context: E
   }
 }
 async function processAuthorizedUpdate(access: ReplyAccess, update: any, context: EngineContext): Promise<void> {
-  if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) return;
+  if (replyChannel(access) !== 'telegram' || !Number.isSafeInteger(update?.update_id) || update.update_id < 0) return;
   const current = await context.fresh();
   if (!current || current.identity !== access.identity) return;
   // 先提交 offset；强杀可能丢失本条，但不能重放已授权的终端输入。
@@ -88,21 +88,24 @@ async function processAuthorizedUpdate(access: ReplyAccess, update: any, context
   }
   const message = update.message, chat = privateUser(message, message?.from);
   if (!chat || typeof message.text !== 'string' || !Number.isSafeInteger(message.message_id)) return;
+  await processMessage(access, message, chat, context, current);
+}
+async function processMessage(access: ReplyAccess, message: any, chat: string, context: EngineContext, current: ReplyAccess): Promise<void> {
   const text = message.text.trim();
-  if (text === '/chatid') { await replyHint(context.api, chat, 'Telegram chat_id', chat, message.message_id); return; }
+  if (replyChannel(access) === 'telegram' && text === '/chatid') { await replyHint(context.api, chat, 'Telegram chat_id', chat, message.message_id); return; }
   if (!current.policy.users.includes(chat)) return;
   if (typeof message.date === 'number' && Date.now() / 1000 - message.date > 300) {
     await replyHint(context.api, chat, t('reply.staleTitle'), t('reply.staleBody')); return;
   }
-  if (/^\/start\s+[a-f0-9]{32}$/.test(text)) {
+  if (replyChannel(access) === 'telegram' && /^\/start\s+[a-f0-9]{32}$/.test(text)) {
     // 飞书跳转：只发普通提示并清除旧键盘状态，不自动进入回复。
     await prompt(access, chat, message.message_id, 'token:' + text.split(/\s+/)[1], context, false); return;
   }
   const replyTo = message.reply_to_message?.message_id;
-  if (!Number.isSafeInteger(replyTo)) {
-    await replyHint(context.api, chat, t('reply.howToTitle'), t('reply.howToBody'), message.message_id); return;
+  if (!validMessageId(replyTo)) {
+    await replyHint(context.api, chat, t('reply.howToTitle'), t(replyChannel(access) === 'feishu' ? 'feishu.replyHint' : 'reply.howToBody'), message.message_id); return;
   }
-  const resolved = await resolveEntry(access, `tg:${chat}:${replyTo}`, context);
+  const resolved = await resolveEntry(access, messageKey(access, chat, replyTo), context);
   if (!resolved) { await replyHint(context.api, chat, t('reply.sessionGoneTitle'), t('reply.expiredReplyBody'), message.message_id); return; }
   if (resolved.entry.request) { await handleInteractionText(access, resolved.entry.request, chat, message, context.api); return; }
   let safe;
@@ -120,6 +123,23 @@ async function processAuthorizedUpdate(access: ReplyAccess, update: any, context
   if (queued === null) { await replyHint(context.api, chat, t('reply.pendingTitle'), t('reply.pendingBody'), message.message_id); return; }
   if (queued) await replyHint(context.api, chat, t('reply.queuedTitle'), t('reply.queuedBody'), message.message_id);
   else await drainReplies(access, context);
+}
+export async function drainFeishuInbox(access: ReplyAccess, context: EngineContext): Promise<void> {
+  if (replyChannel(access) !== 'feishu') return;
+  for (let i = 0; i < 100; i++) {
+    const current = await context.fresh();
+    if (!current || current.identity !== access.identity) return;
+    // 先移除持久消息再处理；崩溃时允许丢失，但绝不重放终端输入或权限决定。
+    const message = await stateTransaction(access, state => {
+      const value = Object.values(state.feishuInbox ?? {})[0];
+      if (value) delete state.feishuInbox![value.id];
+      return value;
+    });
+    if (!message) return;
+    if (!current.policy.users.includes(message.user)) continue;
+    await processMessage(access, { message_id: message.id, text: message.text, date: message.created / 1000,
+      reply_to_message: { message_id: message.parent } }, message.user, context, current);
+  }
 }
 export async function drainReplies(access: ReplyAccess, context: EngineContext): Promise<void> {
   const queued = await stateTransaction(access, state => Object.entries(state.pending)

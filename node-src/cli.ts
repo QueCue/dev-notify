@@ -19,7 +19,7 @@ import { postUpdate } from './maintenance.js';
 import { joinList, localeName, parseLocale, resolveLocale, setLocale, t, type Locale } from './i18n.js';
 import { safeDeliveryReason } from './notification-diagnostics.js';
 
-export const VERSION = '0.2.8';
+export const VERSION = '0.3.0';
 const helpText = () => t('cli.help', { version: VERSION });
 function rawLang(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -170,9 +170,10 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
         return stopped ? 0 : 1;
       }
       if (action === 'status') {
-        const access = await accessReplies(file, context.env), status = await bridgeStatus(file);
+        const access = await accessReplies(file, context.env), status = await bridgeStatus(file, access ?? undefined);
         context.out(access ? t('cli.replyStatusAccess', { users: access.policy.users.length,
           state: t(access.policy.permissions ? 'cli.replyPermissionOn' : 'cli.replyPermissionOff') }) : t('cli.replyStatusNoAccess'));
+        if (access) context.out(t('feishu.channelStatus', { channel: access.policy.channel === 'feishu' ? 'Feishu' : 'Telegram' }));
         context.out(status.ready ? t('cli.bridgeReady') : status.running ? t('cli.bridgeStarting') : t('cli.bridgeNotRunning'));
         if (!status.ready && status.error) context.err(t('bridge.previousFailure', {
           detail: status.problem ? t(status.problem.key, { stage: status.problem.stage }) : t('reply.bridgeFailed'),

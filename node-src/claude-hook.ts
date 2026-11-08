@@ -150,7 +150,9 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
       let trace: DeliveryTrace | undefined;
       try {
         if (channel === 'feishu' && covered.feishu) continue;
-        const plan = makePlan(channel, notification, config);
+        const outgoing = channel === 'feishu' && binding?.access.policy.channel === 'feishu'
+          ? { ...notification, content: notification.content + '\n\n' + t('feishu.replyHint') } : notification;
+        const plan = makePlan(channel, outgoing, config);
         if (channel === 'telegram' && covered.telegram.length) {
           plan.items = plan.items.filter(item => !covered.telegram.includes(item.recipient));
           plan.recipients = new Set(plan.items.map(item => item.recipient)).size;

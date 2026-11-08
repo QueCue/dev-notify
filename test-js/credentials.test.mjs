@@ -80,7 +80,7 @@ test('原生后端底层错误被脱敏且半写入失败尝试清理', () => {
 });
 test('向导首次保存不把秘密写入 JSON，默认确认发送测试', async t => {
   const { file } = await temp(t), store = new Store();
-  const ui = prompts(['3', '111,222', ''], Object.values(VALUES));
+  const ui = prompts(['3', '111,222', '1', ''], Object.values(VALUES));
   let sent = false;
   assert.equal(await wizard(file, { store, prompts: ui, env: {}, testSend: async () => { sent = true; return true; } }), true);
   const raw = await readFile(file, 'utf8'), saved = JSON.parse(raw);
@@ -121,7 +121,7 @@ test('编号越界后可重试，桥接运行时跳过自动发现', async t => 
   assert.equal(called, false);
   assert.ok(runUi.output.some(line => line.includes('桥接正在运行')));
 });
-test('完整向导→系统引用→双渠道模拟发送链路', async t => {  const { file } = await temp(t), store = new Store(), ui = prompts(['3', '111', ''], Object.values(VALUES));
+test('完整向导→系统引用→双渠道模拟发送链路', async t => {  const { file } = await temp(t), store = new Store(), ui = prompts(['3', '111', '1', ''], Object.values(VALUES));
   let deliveries = 0;
   assert.equal(await wizard(file, { store, prompts: ui, env: {}, testSend: async config => {
     for (const channel of ['telegram', 'feishu']) {
@@ -149,7 +149,7 @@ test('更新留空保留，签名可清除，成功后删除旧条目', async t 
   const { file } = await temp(t), store = new Store();
   const original = data(); original.telegram.chat_ids = ['111'];
   await writeFile(file, JSON.stringify(original)); store.create(ID, VALUES);
-  const ui = prompts(['', '', ''], ['', '', '-']);
+  const ui = prompts(['', '', '', ''], ['', '', '-']);
   assert.equal(await wizard(file, { store, prompts: ui, env: {} }), true);
   const saved = JSON.parse(await readFile(file, 'utf8'));
   assert.notEqual(saved.credentials.id, ID); assert.equal(store.read(ID), null);

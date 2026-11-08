@@ -9,7 +9,9 @@ Receive task notifications through **Telegram and Feishu**. With Claude Code, re
 - Changes and upgrade notes: [CHANGELOG.en.md](CHANGELOG.en.md)
 - Security and privacy: [SECURITY.en.md](SECURITY.en.md)
 
-General notifications do not require Claude Code. npm automatically installs the communication dependency [QueCue/notify-core](https://github.com/QueCue/notify-core); no separate installation is needed.
+General notifications do not require Claude Code. Communication uses the standard npm dependency [`@quecue/notify-core`](https://github.com/QueCue/notify-core) (`^0.2.0`), installed automatically by npm; no separate installation is needed.
+
+Two-way communication through Feishu self-built apps requires **0.3.0 or later**. Existing Webhook notifications and the Webhook + Telegram reply path remain unchanged.
 
 ## Installation and quick start
 
@@ -24,12 +26,24 @@ dev-notify setup
 The wizard guides you through channels, credentials, and recipients, then asks for confirmation before saving:
 
 1. Telegram: prepare a bot token, send the bot a message, then select recipients or enter numeric chat IDs. Separate multiple IDs with commas.
-2. Feishu: enter a China-site custom bot webhook and an optional signing secret.
-3. Secrets use hidden input. If the terminal cannot hide input, setup stops.
+2. Feishu: choose a mode first. The default `webhook` keeps the China-site custom bot webhook and optional signing secret for one-way notifications. Choose `app` for a self-built app bot, supplying its App ID, App Secret, and recipient `open_id` values.
+3. Credentials, including the app's App ID and App Secret, use hidden input. If the terminal cannot hide input, setup stops.
 4. After confirmation, setup sends a test notification and installs Claude Code notification hooks by default. Skip either with `--no-test` or `--no-hooks`.
-5. Run `setup` again to edit configuration. A blank secret preserves its value; `-` clears an optional signature.
+5. Run `setup` again to edit configuration. A blank credential preserves its value; `-` clears an optional signature.
 
-Credentials are stored in Windows Credential Manager or macOS Keychain, not as plaintext in configuration. The system may request credential access; failures do not fall back to plaintext storage.
+Credentials are stored in Windows Credential Manager or macOS Keychain, not as plaintext in configuration; environment variables listed below are another option. The system may request credential access; failures do not fall back to plaintext storage.
+
+### Prepare a Feishu self-built app
+
+Only self-built app bots support remote replies within Feishu. Webhook URLs and signing secrets cannot receive messages.
+
+1. Create a self-built app in the Feishu developer console and enable its bot capability.
+2. Under events and callbacks, select long-connection mode and subscribe to the message event `im.message.receive_v1`.
+3. Request `im:message:send_as_bot` for sending and `im:message.p2p_msg:readonly` for receiving private messages. This tool rejects group-chat input, so group-message permissions are not needed for remote replies; platform approval requirements remain authoritative.
+4. Publish an app version, set its availability scope, and ensure authorized users are included. Obtain each user's `open_id` for this app; do not substitute a group chat ID, phone number, or user ID from another app.
+5. Run `dev-notify setup` and select Feishu `app` mode. For remote input, separately authorize it with `dev-notify reply setup`.
+
+The machine needs outbound connectivity to Feishu. WebSocket receives messages and HTTP APIs send/reply; no public endpoint is required, and card-action callbacks are unsupported.
 
 ```sh
 dev-notify send --title "Build complete" --content "Installer generated"
@@ -93,13 +107,16 @@ dev-notify reply start
 dev-notify reply status
 ```
 
-Authorize only trusted Telegram private-chat users who are already notification recipients. Group members and Feishu card viewers do not automatically gain input rights. Tool permission approval requires a separate choice in `reply setup`.
+When both Telegram and Feishu app channels are available, `reply setup` lets you choose one. **Each configuration has exactly one reply channel**, not simultaneous remote input from both. Authorize only trusted users in the current notification list: Telegram private-chat chat IDs or Feishu app user `open_id` values. Notification recipients, group members, and card viewers do not automatically gain input rights. Tool permission approval requires a separate opt-in.
+
+After reauthorizing or switching reply channels, run `dev-notify reply stop` followed by `dev-notify reply start` so the old bridge exits and the new authorization is loaded.
 
 ### Reply to a session
 
-- Click "💬 Reply to Claude" on a Telegram completion notification or reply directly to that message.
-- Feishu's "Reply to Claude in Telegram" opens the corresponding bot. Follow the prompt: long-press the message and choose Reply before entering text.
-- Buttons appear only when the bridge is ready and the session identity can be verified. Use a recent notification; older messages do not gain buttons automatically.
+- Telegram reply channel: click the reply button on a Telegram completion notification or reply directly to that message.
+- The Webhook + Telegram path remains available: Feishu's "Reply to Claude in Telegram" opens the corresponding bot. Follow the prompt: long-press the message and choose Reply before entering text. The Webhook itself cannot receive replies.
+- Feishu reply channel: in a private chat with the self-built app bot, **quote (reply to) the task completion notification** you want to continue and enter text. Ordinary messages without a quoted notification do not select a session by guesswork; group chats, bots, and non-text messages are rejected.
+- Reply entry points are available only when the bridge is ready and the session identity can be verified. Use a recent notification; older messages do not gain entry points automatically. Feishu uses quoted text replies, not card-action callbacks.
 - Replies received while Claude is working queue locally and are attempted after completion. The queue is canceled after 5 minutes, new local input, or a target change.
 - A reply is limited to 4000 Unicode characters. Newlines and control characters are cleaned, and text is submitted as one terminal input, not executed as a shell command.
 - "Queued", "Forwarded", and "Claude received" are different states. Receipt is confirmed only after a matching local input event. Failed or unknown-result input is not retried automatically.
@@ -109,8 +126,9 @@ Remote input can contain Claude commands and grants real control; it is not read
 ### Questions and tool permissions
 
 - Supports actual single-select and multi-select questions and custom answers for each question. The local interface remains usable.
-- After separately enabling tool permission approval, choose Allow this time, Deny, or a custom denial reason. No permanent approval rules are created.
-- Timeouts, revoked authorization, or unverifiable targets never select or approve by default. Old buttons cannot answer new questions.
+- In Feishu, quote the corresponding **question message**: enter one option number for single-select (for example, `2`), comma-separated numbers for multi-select (for example, `1,3`), or custom text as prompted.
+- After separately enabling tool permission approval, Telegram offers Allow this time, Deny, or a custom denial reason. In Feishu, quote the corresponding **permission message** and enter `/allow` to allow once, `/deny` to deny, or `/close` to close remote handling and return control to the local UI. Other text is only a denial reason, never an approval. No permanent approval rules are created.
+- Timeouts, revoked authorization, or unverifiable targets never select or approve by default. Old buttons and quoted messages cannot answer new questions.
 - Answers are first reported as registered, then as applied, not applied, or unknown based on Claude's actual result.
 - Unsupported interactions such as MCP forms and URLs must be handled locally.
 
@@ -120,7 +138,9 @@ Remote input can contain Claude commands and grants real control; it is not read
 - macOS: foreground native `claude` in tmux or Ghostty. Ghostty may require system Automation authorization; denied access does not redirect input to another window.
 - No automatic fallback to VS Code integrated terminals, WSL, SSH, or other terminals. See [SECURITY.en.md](SECURITY.en.md) for macOS native-input and other compatibility limits.
 - The bridge is a local background process, without a public listener or system auto-start. Supported later events can start it on demand.
-- **Only one update consumer may use a bot.** Use different bots for reply bridges on different machines. Do not run `reply start` and `reply run` instances in parallel.
+- **Only one update consumer may use a Telegram bot; run only one reply bridge per Feishu app.** Multiple Feishu long-connection consumers split events rather than broadcasting them, so a machine may miss replies. Use different bots/apps on different machines. Do not run `reply start` and `reply run` instances in parallel.
+- Feishu reception and local processing are separate; reception or queueing does not establish that Claude received the input. Both channels share session verification, queueing, and platform limits; Feishu does not expand terminal support.
+- Reply state may temporarily contain message text, tool arguments, and answers and **is not encrypted storage**. Do not share the entire reply-state directory; disable and stop the bridge before cleanup. See [SECURITY.en.md](SECURITY.en.md).
 
 ```sh
 dev-notify reply stop    # stop the current bridge; retain authorization for later event-driven startup
@@ -148,14 +168,31 @@ Use `--config <path>` for a specific configuration, or set `DEV_NOTIFY_HOME` to 
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `TELEGRAM_CHAT_ID` / `TELEGRAM_CHAT_IDS` | Single / comma-separated recipients |
 | `FEISHU_WEBHOOK` | Feishu China-site custom bot webhook |
-| `FEISHU_SECRET` | Optional signing secret |
+| `FEISHU_SECRET` | Optional signing secret for Webhook mode |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | Feishu self-built app ID / secret (`app` mode) |
+| `FEISHU_OPEN_IDS` | Comma-separated Feishu app recipient `open_id` values |
 | `DEV_NOTIFY_LANG` | Environment language, zh or en |
 | `DEV_NOTIFY_HOME` | Tool configuration and data root |
 | `CLAUDE_CONFIG_DIR` | Claude Code configuration directory |
 
 Windows also supports `APPDATA`/`LOCALAPPDATA` overrides; Linux helper paths support `XDG_CONFIG_HOME`/`XDG_STATE_HOME`.
 
-Explicit credential and recipient environment variables take precedence, **including empty values**. Recipient variables replace the file's list; when both forms are present, they are merged and deduplicated. Represent large numeric chat IDs as strings. Configuration fields `token_env`, `webhook_env`, and `secret_env` can specify custom variable names. Do not write tokens, webhooks, or signing secrets directly into JSON.
+Explicit credential and recipient environment variables take precedence, **including empty values**, with no fallback to previous values. Recipient variables replace the file's list; Telegram's `TELEGRAM_CHAT_ID` and `TELEGRAM_CHAT_IDS` are merged and deduplicated when both exist. Represent large numeric chat IDs as strings. Feishu's `FEISHU_OPEN_IDS` completely replaces `feishu.open_ids`; an explicitly empty value means an empty recipient list, without retaining file-based users or their old authorization.
+
+Configuration fields `token_env`, `webhook_env`, `secret_env`, and Feishu's `app_id_env` and `app_secret_env` can specify custom credential variable names. **Plaintext credentials are forbidden in JSON**: do not write tokens, webhooks, signing secrets, App IDs, or App Secrets there. The wizard stores only system keyring references; use environment variable names for automation.
+
+For example, merge these fields into the configuration's `feishu` object and set app credentials in the runtime environment (do not put actual credentials in this example):
+
+```json
+"feishu": {
+  "mode": "app",
+  "app_id_env": "FEISHU_APP_ID",
+  "app_secret_env": "FEISHU_APP_SECRET",
+  "open_ids": ["ou_example"]
+}
+```
+
+Omitting `feishu.mode` still selects `webhook`; setting app credentials does not switch modes automatically. Recipient configuration is not reply authorization. After changes, run `reply setup` with the same configuration to review authorization.
 
 Language precedence: `--lang zh|en` > `DEV_NOTIFY_LANG` > configuration `language` > Simplified Chinese.
 
@@ -209,7 +246,9 @@ Error messages use `[DN-…]` identifiers that stay the same across languages. T
 
 Failures labeled as retained by `reply status` are not new failure events. If the bridge is now ready, do not restart it solely because of historical failures.
 
-- **No reply button:** confirm authorization, bridge readiness, and actual hook loading, then submit a normal new task in the target session. Unverifiable sessions do not gain input rights.
+- **No reply entry point:** confirm authorization, the selected reply channel, bridge readiness, and actual hook loading, then submit a normal new task in the target session. Unverifiable sessions do not gain input rights. Feishu app mode uses quoted messages, not card buttons.
+- **Feishu notifications work but replies do not:** confirm `mode` is `app`, `reply setup` selected Feishu, and the sender's `open_id` is authorized and still in the effective recipient list. Send text in the bot's private chat, quoting the corresponding completion/question/permission message. Webhooks cannot receive replies.
+- **No Feishu inbound events:** check bot capability, long-connection mode, `im.message.receive_v1`, send/private-message permissions, app publication, and availability scope. Ensure no other consumer is splitting the app's events. Run `reply status`; do not try to fix this by starting another consumer.
 - **Only one channel received a notification:** check that notification's channel error. Channels deliver independently; recovery does not automatically replay failed messages.
 - **Unavailable entry after an update:** check `dev-notify --version` and the active Node environment, then reinstall hooks. Existing hook entries alone do not prove usability.
 - **Permission or lock error:** check directory ownership, access rights, and running processes. Do not indiscriminately delete locks or rerun with sudo/administrator rights.

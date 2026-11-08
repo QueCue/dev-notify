@@ -2,11 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigError, type Config, type Env } from './config.js';
 import { t } from './i18n.js';
-import { accessReplies, botKey, digest, stateTransaction, targetEpoch, type ReplyAccess, type SessionTarget } from './reply-state.js';
+import { accessReplies, botKey, digest, stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, type ReplyAccess, type SessionTarget } from './reply-state.js';
 import { lookupSession, SessionLookupError, type SessionLookup } from './reply-platform.js';
 import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
+import { feishuReplyApi } from './reply-feishu.js';
 import { bridgeStatus, startBridge, bridgeBotUsername } from './reply-bridge.js';
 import { CONNECTION_RESET_RETRY_DELAYS, ReplyPreparationError, TelegramConnectionResetError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
@@ -26,7 +27,8 @@ export interface ReplyHookOptions {
   wait?: typeof waitInteraction;
   sleep?: (ms: number) => Promise<unknown>;
 }
-const apiFor = (access: ReplyAccess, options: ReplyHookOptions) => (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
+const apiFor = (access: ReplyAccess, options: ReplyHookOptions) => (options.api ?? (value => replyChannel(value) === 'feishu'
+  ? feishuReplyApi(value.config) : telegramApi(value.config.telegram.token)))(access);
 async function inspectTarget(data: any, options: ReplyHookOptions): Promise<SessionLookup> {
   try {
     if (options.sessionLookup) return await options.sessionLookup(data.session_id);
@@ -96,8 +98,8 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
   });
   if (receipt) {
     await replyHint(apiFor(access, options), receipt.chat, t('reply.receivedTitle'),
-      t('reply.receivedBody'), receipt.message).catch(() => options.err?.(t('reply.receivedTelegramFailed')));
-    if (access.config.feishu.enabled && access.config.feishu.webhook) {
+      t('reply.receivedBody'), receipt.message).catch(() => options.err?.(t('feishu.receiptFailed')));
+    if (replyChannel(access) === 'telegram' && access.config.feishu.enabled && access.config.feishu.mode !== 'app' && access.config.feishu.webhook) {
       try {
         const result = await (options.send ?? deliver)(makePlan('feishu', { title: t('reply.receivedTitle'), level: 'info',
           content: t('reply.receivedFeishuBody'),
@@ -112,7 +114,7 @@ export async function notificationCoverage(data: any, file: string, config: Conf
   const none = { telegram: [] as string[], feishu: false };
   if (data.hook_event_name !== 'Notification' || data.notification_type !== 'permission_prompt' || typeof data.session_id !== 'string') return none;
   const access = await accessReplies(file, options.env);
-  if (!access || botKey(config) !== access.policy.bot) return none;
+  if (!access || replyChannel(access) === 'feishu' || botKey(config) !== access.policy.bot) return none;
   return stateTransaction(access, state => {
     const target = state.sessions[data.session_id];
     const call = target?.latestCall && state.calls[target.latestCall];
@@ -151,7 +153,7 @@ export async function attachReply(message: Message, data: any, file: string, opt
   if (!saved.tracked) return skip('input-unobserved');
   if (targetEpoch(saved) !== targetEpoch(target)) return skip('identity-changed');
   const ready = options.bridge ? await options.bridge(file, options.env ?? process.env)
-    : (await bridgeStatus(file)).ready || await startBridge(file, options.env);
+    : (await bridgeStatus(file, access)).ready || await startBridge(file, options.env);
   if (!ready) { options.replyDiagnostic?.('bridge-unready'); options.err?.(t('reply.bridgeNotReadyButton')); return null; }
   const revalidate = async (): Promise<ReplyDiagnosticCode | null> => {
     const current = await accessReplies(file, options.env);
@@ -164,9 +166,23 @@ export async function attachReply(message: Message, data: any, file: string, opt
     if (latest.working) return 'session-working';
     if (!latest.tracked) return 'input-unobserved';
     if (targetEpoch(latest) !== targetEpoch(target)) return 'identity-changed';
-    const stillReady = options.bridge ? await options.bridge(file, options.env ?? process.env) : (await bridgeStatus(file)).ready;
+    const stillReady = options.bridge ? await options.bridge(file, options.env ?? process.env) : (await bridgeStatus(file, access)).ready;
     return stillReady ? null : 'bridge-unready';
   };
+  if (replyChannel(access) === 'feishu') {
+    const reason = await revalidate();
+    if (reason) return skip(reason);
+    const token = randomBytes(16).toString('hex');
+    const committed = await stateTransaction(access, state => {
+      const latest = state.sessions[target.session];
+      if (!latest || latest.unverified || latest.working || !latest.tracked || targetEpoch(latest) !== targetEpoch(target)) return false;
+      state.entries['token:' + token] = { session: target.session, epoch: targetEpoch(target), updated: Date.now() };
+      return true;
+    });
+    if (!committed) return skip('identity-changed');
+    options.replyDiagnostic?.('attached');
+    return { access, token };
+  }
   const api = apiFor(access, options);
   let bot, fromBridge = false;
   // 只读查询：明确 reset 时最多重试 2 次（约 1s、3s），每次等待后重新核验授权与会话；全部 reset 才用桥接已核验身份。
@@ -207,13 +223,13 @@ export async function attachReply(message: Message, data: any, file: string, opt
   return { access, token };
 }
 export function mapReplies(plan: Plan, binding: { access: ReplyAccess; token: string }): void {
-  if (plan.channel !== 'telegram') return;
+  if (plan.channel !== replyChannel(binding.access)) return;
   plan.onSent = async (item, response) => {
     if (!binding.access.policy.users.includes(item.recipient)) return;
-    if (!Number.isSafeInteger(response.result?.message_id)) throw new ConfigError(t('reply.noMessageId'));
+    if (!validMessageId(response.result?.message_id)) throw new ConfigError(t('reply.noMessageId'));
     await stateTransaction(binding.access, state => {
       const entry = state.entries['token:' + binding.token];
-      if (entry) state.entries[`tg:${item.recipient}:${response.result.message_id}`] = entry;
+      if (entry) state.entries[messageKey(binding.access, item.recipient, response.result.message_id)] = entry;
     });
   };
 }
@@ -240,7 +256,7 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
   const call = await stateTransaction(access, state => matchingCall(state, target, data));
   if (!call) { options.err?.(t('reply.noMatchingCall')); return; }
   const ready = options.bridge ? await options.bridge(file, options.env ?? process.env)
-    : (await bridgeStatus(file)).ready || await startBridge(file, options.env);
+    : (await bridgeStatus(file, access)).ready || await startBridge(file, options.env);
   if (!ready) { options.err?.(t('reply.bridgeNotReadyQuestion')); return; }
   const api = apiFor(access, options);
   const request = await createInteraction(access, target, kind, kind === 'question' ? data.tool_input : { tool_name: data.tool_name, tool_input: data.tool_input }, call);
@@ -249,7 +265,7 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
   process.on('SIGTERM', cancel); process.on('SIGINT', cancel);
   try {
     for (const chat of access.policy.users) await showInteraction(access, request.id, chat, api);
-    if (access.config.feishu.enabled && access.config.feishu.webhook) {
+    if (replyChannel(access) === 'telegram' && access.config.feishu.enabled && access.config.feishu.mode !== 'app' && access.config.feishu.webhook) {
       const bot = await api('getMe', {});
       if (typeof bot?.username === 'string' && /^[A-Za-z0-9_]{5,64}$/.test(bot.username)) {
         const result = await (options.send ?? deliver)(makePlan('feishu', { title: t('hook.notificationTitle'), level: 'warn', footer: '',
