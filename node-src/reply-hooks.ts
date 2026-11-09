@@ -3,12 +3,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigError, type Config, type Env } from './config.js';
 import { t, getLocale } from './i18n.js';
 import { MAX_REPLY_CARDS } from './feishu-card-status.js';
-import { accessReplies, botKey, digest, stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, TTL, type ReplyAccess, type SessionTarget } from './reply-state.js';
+import { accessReplies, botKey, digest, stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, TTL, channelAccess, replyAccesses, chatChannel, type ReplyChannel, type ReplyAccess, type SessionTarget } from './reply-state.js';
 import { lookupSession, SessionLookupError, type SessionLookup } from './reply-platform.js';
 import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
 import { telegramApi, replyHint, type TelegramApi } from './reply-telegram.js';
-import { feishuReplyApi } from './reply-feishu.js';
+import { replyApi } from './reply-api.js';
 import { bridgeStatus, startBridge, bridgeBotUsername } from './reply-bridge.js';
 import { CONNECTION_RESET_RETRY_DELAYS, ReplyPreparationError, TelegramConnectionResetError, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { createInteraction, questionsContent, showInteraction, waitInteraction } from './reply-interactions.js';
@@ -17,6 +17,7 @@ import { completeToolCall, endSessionInteractions, finishInteraction, matchingCa
 
 export interface ReplyHookOptions {
   env?: Env;
+  channel?: ReplyChannel;
   session?: (id: string) => Promise<SessionTarget | null>;
   sessionLookup?: (id: string) => Promise<SessionLookup>;
   api?: (access: ReplyAccess) => TelegramApi;
@@ -28,8 +29,12 @@ export interface ReplyHookOptions {
   wait?: typeof waitInteraction;
   sleep?: (ms: number) => Promise<unknown>;
 }
-const apiFor = (access: ReplyAccess, options: ReplyHookOptions) => (options.api ?? (value => replyChannel(value) === 'feishu'
-  ? feishuReplyApi(value.config) : telegramApi(value.config.telegram.token)))(access);
+const apiFor = (access: ReplyAccess, options: ReplyHookOptions) => access.grants ? replyApi(access, options.api)
+  : (options.api ?? (value => replyChannel(value) === 'feishu' ? replyApi(value) : telegramApi(value.config.telegram.token)))(access);
+const accessFor = async (file: string, options: ReplyHookOptions) => {
+  const access = await accessReplies(file, options.env);
+  return access && options.channel ? channelAccess(access, options.channel) : access;
+};
 async function inspectTarget(data: any, options: ReplyHookOptions): Promise<SessionLookup> {
   try {
     if (options.sessionLookup) return await options.sessionLookup(data.session_id);
@@ -48,7 +53,7 @@ async function getTarget(data: any, options: ReplyHookOptions): Promise<SessionT
 export async function lifecycleHook(data: any, file: string, options: ReplyHookOptions = {}): Promise<void> {
   const event = data.hook_event_name;
   if (!['SessionStart', 'UserPromptSubmit', 'SessionEnd', 'Stop', 'Notification'].includes(event) || typeof data.session_id !== 'string') return;
-  const access = await accessReplies(file, options.env);
+  const access = await accessFor(file, options);
   if (!access) return;
   if (event === 'Stop' && data.stop_hook_active === true) return;
   const before = event === 'SessionEnd' ? null : await stateTransaction(access, state => state.sessions[data.session_id]);
@@ -102,7 +107,7 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
   if (receipt) {
     await replyHint(apiFor(access, options), receipt.chat, t('reply.receivedTitle'),
       t('reply.receivedBody'), receipt.message).catch(() => options.err?.(t('feishu.receiptFailed')));
-    if (replyChannel(access) === 'telegram' && access.config.feishu.enabled && access.config.feishu.mode !== 'app' && access.config.feishu.webhook) {
+    if (chatChannel(receipt.chat) === 'telegram' && access.config.feishu.enabled && access.config.feishu.mode !== 'app' && access.config.feishu.webhook) {
       try {
         const result = await (options.send ?? deliver)(makePlan('feishu', { title: t('reply.receivedTitle'), level: 'info',
           content: t('reply.receivedFeishuBody'),
@@ -116,7 +121,7 @@ const feishuTarget = (config: Config) => digest(JSON.stringify([config.feishu.we
 export async function notificationCoverage(data: any, file: string, config: Config, options: ReplyHookOptions = {}): Promise<{ telegram: string[]; feishu: boolean }> {
   const none = { telegram: [] as string[], feishu: false };
   if (data.hook_event_name !== 'Notification' || data.notification_type !== 'permission_prompt' || typeof data.session_id !== 'string') return none;
-  const access = await accessReplies(file, options.env);
+  const access = await accessFor(file, options);
   if (!access || replyChannel(access) === 'feishu' || botKey(config) !== access.policy.bot) return none;
   return stateTransaction(access, state => {
     const target = state.sessions[data.session_id];
@@ -135,7 +140,7 @@ export async function notificationCoverage(data: any, file: string, config: Conf
 }
 export async function attachReply(message: Message, data: any, file: string, options: ReplyHookOptions = {}): Promise<{ access: ReplyAccess; token: string } | null> {
   if (data.hook_event_name !== 'Stop') return null;
-  const access = await accessReplies(file, options.env);
+  const access = await accessFor(file, options);
   if (!access) { options.replyDiagnostic?.('disabled'); return null; }
   const skip = (reason: ReplyDiagnosticCode) => {
     options.replyDiagnostic?.(reason);
@@ -159,7 +164,7 @@ export async function attachReply(message: Message, data: any, file: string, opt
     : (await bridgeStatus(file, access)).ready || await startBridge(file, options.env);
   if (!ready) { options.replyDiagnostic?.('bridge-unready'); options.err?.(t('reply.bridgeNotReadyButton')); return null; }
   const revalidate = async (): Promise<ReplyDiagnosticCode | null> => {
-    const current = await accessReplies(file, options.env);
+    const current = await accessFor(file, options);
     if (!current) return 'disabled';
     if (current.identity !== access.identity) return 'identity-changed';
     const active = await getTarget(data, options);
@@ -252,13 +257,13 @@ export function mapReplies(plan: Plan, binding: { access: ReplyAccess; token: st
 }
 export async function interactionHook(data: any, file: string, options: ReplyHookOptions = {}): Promise<void> {
   if (!['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'].includes(data.hook_event_name)) return;
-  const access = await accessReplies(file, options.env);
+  const access = await accessFor(file, options);
   if (!access) return;
   if (['PostToolUse', 'PostToolUseFailure', 'PermissionDenied'].includes(data.hook_event_name)) {
     await completeToolCall(access, data); return;
   }
   if (!['PreToolUse', 'PermissionRequest'].includes(data.hook_event_name)) return;
-  const kind = data.tool_name === 'AskUserQuestion' ? 'question' : access.policy.permissions === true ? 'permission' : null;
+  const kind = data.tool_name === 'AskUserQuestion' ? 'question' : replyAccesses(access).some(view => view.policy.permissions === true) ? 'permission' : null;
   if (typeof data.session_id !== 'string' || data.hook_event_name === 'PermissionRequest' && !kind) return;
   const cached = data.hook_event_name === 'PreToolUse'
     ? await stateTransaction(access, state => state.sessions[data.session_id]) : null;
@@ -276,12 +281,21 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
     : (await bridgeStatus(file, access)).ready || await startBridge(file, options.env);
   if (!ready) { options.err?.(t('reply.bridgeNotReadyQuestion')); return; }
   const api = apiFor(access, options);
-  const request = await createInteraction(access, target, kind, kind === 'question' ? data.tool_input : { tool_name: data.tool_name, tool_input: data.tool_input }, call);
+  const authorizing = kind === 'permission' ? replyAccesses(access).find(view => view.policy.permissions === true)! : access;
+  const request = await createInteraction(authorizing, target, kind, kind === 'question' ? data.tool_input : { tool_name: data.tool_name, tool_input: data.tool_input }, call);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.on('SIGTERM', cancel); process.on('SIGINT', cancel);
   try {
-    for (const chat of access.policy.users) await showInteraction(access, request.id, chat, api);
+    let delivered = false;
+    for (const view of replyAccesses(access)) {
+      if (kind === 'permission' && view.policy.permissions !== true) continue;
+      for (const chat of view.policy.users) {
+        try { await showInteraction(view, request.id, chat, api, true); delivered = true; }
+        catch (error) { if (!access.grants) throw error; options.err?.(t('reply.interactionNotSent')); }
+      }
+    }
+    if (!delivered) throw new ConfigError(t('reply.interactionNotSent'));
     if (replyChannel(access) === 'telegram' && access.config.feishu.enabled && access.config.feishu.mode !== 'app' && access.config.feishu.webhook) {
       const bot = await api('getMe', {});
       if (typeof bot?.username === 'string' && /^[A-Za-z0-9_]{5,64}$/.test(bot.username)) {
@@ -294,7 +308,10 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
         });
       }
     }
-    const response = await (options.wait ?? waitInteraction)(access, request, () => accessReplies(file, options.env), { signal: controller.signal });
+    const response = await (options.wait ?? waitInteraction)(authorizing, request, async () => {
+      const current = await accessReplies(file, options.env);
+      return current ? channelAccess(current, replyChannel(authorizing)) : null;
+    }, { signal: controller.signal });
     if (response && !controller.signal.aborted) options.response?.(response);
     else options.err?.(t('reply.interactionEnded'));
   } catch (error) {

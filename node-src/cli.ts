@@ -11,7 +11,7 @@ import { terminalPrompts, readText, Cancelled, type Prompts } from './prompts.js
 import { CredentialError, type Store } from './credentials.js';
 import { claudeCodeStatus, claudeSettingsPath, configureClaudeCode } from './claude-code.js';
 import { dispatchClaudeHook, readHookInput } from './claude-hook.js';
-import { accessReplies, configureReplies, disableReplies } from './reply-state.js';
+import { accessReplies, configureReplies, disableReplies, replyAccesses } from './reply-state.js';
 import { startBridge, stopBridge, bridgeStatus, runBridge, type BridgeProblem } from './reply-bridge.js';
 import type { ReplyHookOptions } from './reply-hooks.js';
 import { updatePackage } from './update.js';
@@ -19,7 +19,7 @@ import { postUpdate } from './maintenance.js';
 import { joinList, localeName, parseLocale, resolveLocale, setLocale, t, type Locale } from './i18n.js';
 import { safeDeliveryReason } from './notification-diagnostics.js';
 
-export const VERSION = '0.3.2';
+export const VERSION = '0.4.0';
 const helpText = () => t('cli.help', { version: VERSION });
 function rawLang(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -171,9 +171,14 @@ export async function main(argv = process.argv.slice(2), overrides: Partial<Cont
       }
       if (action === 'status') {
         const access = await accessReplies(file, context.env), status = await bridgeStatus(file, access ?? undefined);
-        context.out(access ? t('cli.replyStatusAccess', { users: access.policy.users.length,
-          state: t(access.policy.permissions ? 'cli.replyPermissionOn' : 'cli.replyPermissionOff') }) : t('cli.replyStatusNoAccess'));
-        if (access) context.out(t('feishu.channelStatus', { channel: access.policy.channel === 'feishu' ? 'Feishu' : 'Telegram' }));
+        if (!access) context.out(t('cli.replyStatusNoAccess'));
+        else for (const view of replyAccesses(access)) {
+          const channel = t('feishu.channelStatus', { channel: view.policy.channel === 'feishu' ? 'Feishu' : 'Telegram' });
+          if (access.grants) context.out(channel);
+          context.out(t('cli.replyStatusAccess', { users: view.policy.users.length,
+            state: t(view.policy.permissions ? 'cli.replyPermissionOn' : 'cli.replyPermissionOff') }));
+          if (!access.grants) context.out(channel);
+        }
         context.out(status.ready ? t('cli.bridgeReady') : status.running ? t('cli.bridgeStarting') : t('cli.bridgeNotRunning'));
         if (!status.ready && status.error) context.err(t('bridge.previousFailure', {
           detail: status.problem ? t(status.problem.key, { stage: status.problem.stage }) : t('reply.bridgeFailed'),

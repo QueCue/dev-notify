@@ -1,7 +1,8 @@
-import { digest, stateTransaction, targetEpoch, type Interaction, type InteractionResult, type ReplyAccess, type ReplyState, type SessionTarget } from './reply-state.js';
+import { digest, stateTransaction, targetEpoch, authorizedChat, replyAccesses, replyChannel, type Interaction, type InteractionResult, type ReplyAccess, type ReplyState, type SessionTarget } from './reply-state.js';
 import { t } from './i18n.js';
 import { ConfigError } from './config.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
+import { showInteraction } from './reply-interactions.js';
 
 // PermissionRequest 没有 tool_use_id：只接受唯一且尚未结束的同输入调用，歧义时保留本机处理。
 function canonical(value: any): any {
@@ -106,6 +107,19 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
   fresh: () => Promise<ReplyAccess | null>, log: (text: string) => void = () => {}): Promise<void> {
   const current = await fresh();
   if (!current || current.identity !== access.identity) return;
+  if (access.grants) {
+    const active = await stateTransaction(access, state => Object.values(state.requests).filter(value => !value.result && !value.response && !value.claimed && value.expires > Date.now()
+      && state.sessions[value.session]?.unverified !== true && state.sessions[value.session] && targetEpoch(state.sessions[value.session]) === value.epoch));
+    for (const value of active) for (const view of replyAccesses(access)) {
+      if (value.kind === 'permission' && view.policy.permissions !== true) continue;
+      for (const chat of view.policy.users) {
+        if (value.displayed?.[`${replyChannel(view)}:${chat}`] === value.index) continue;
+        const final = await fresh();
+        if (!final || final.identity !== access.identity) return;
+        await showInteraction(view, value.id, chat, api, true).catch(() => log(t('reply.feedbackFailedLog')));
+      }
+    }
+  }
   const work = await stateTransaction(access, state => {
     for (const value of Object.values(state.requests)) {
       if (value.result) continue;
@@ -122,13 +136,13 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
             : t('reply.expiredUnanswered'),
       });
     }
-    return Object.values(state.requests).filter(value => value.result || value.receipts?.some(r => r.result));
+    return Object.values(state.requests).filter(value => value.result || value.receipts?.some(r => r.result) || access.grants && value.response);
   });
   for (const value of work) {
     for (const receipt of value.receipts ?? []) {
       if (!receipt.result || receipt.delivery) continue;
       const authorized = await fresh();
-      if (!authorized || authorized.identity !== access.identity || !authorized.policy.users.includes(receipt.chat)) return;
+      if (!authorized || authorized.identity !== access.identity || !authorizedChat(authorized, receipt.chat)) return;
       const claimed = await stateTransaction(access, state => {
         const actual = state.requests[value.id]?.receipts?.find(r => r.id === receipt.id);
         if (!actual?.result || actual.delivery) return false;
@@ -145,18 +159,36 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
         if (actual) actual.delivery = delivery;
       });
     }
-    if (!value.result) continue;
+    if (!value.result) {
+      if (access.grants && value.response) for (const message of value.messages ?? []) {
+        if (message.registered) continue;
+        const final = await fresh();
+        if (!final || final.identity !== access.identity || !authorizedChat(final, message.chat)) return;
+        const claimed = await stateTransaction(access, state => {
+          const actual = state.requests[value.id]?.messages?.find(item => item.chat === message.chat && item.message === message.message);
+          if (!actual || actual.registered) return false;
+          actual.registered = true; return true;
+        });
+        if (!claimed) continue;
+        if (typeof message.message === 'number') await api('editMessageReplyMarkup', { chat_id: message.chat, message_id: message.message,
+          reply_markup: { inline_keyboard: [[{ text: t('reply.pendingConfirmationTitle'), callback_data: `dn:q:${value.id}:0:l` }]] } }).catch(() => {});
+        else await replyHint(api, message.chat, t('reply.pendingConfirmationTitle'), t('reply.pendingSubmitted'), message.message).catch(() => {});
+      }
+      continue;
+    }
     for (const message of value.messages ?? []) {
       if (message.cleared) continue;
       const authorized = await fresh();
-      if (!authorized || authorized.identity !== access.identity || !authorized.policy.users.includes(message.chat)) return;
+      if (!authorized || authorized.identity !== access.identity || !authorizedChat(authorized, message.chat)) return;
       // 最多尝试一次移除按钮；编辑失败时旧回调仍由服务端状态拒绝。
       await stateTransaction(access, state => {
         const actual = state.requests[value.id]?.messages?.find(m => m.chat === message.chat && m.message === message.message);
         if (actual) actual.cleared = true;
       });
       const label = endLabel(value.result);
-      await api('editMessageReplyMarkup', { chat_id: message.chat, message_id: message.message,
+      if (typeof message.message === 'string') await replyHint(api, message.chat, label, value.result.text, message.message)
+        .catch(() => log(t('reply.feedbackFailedLog')));
+      else await api('editMessageReplyMarkup', { chat_id: message.chat, message_id: message.message,
         reply_markup: { inline_keyboard: [[{ text: label, callback_data: `dn:q:${value.id}:0:l` }]] } })
         .catch(() => log(t('reply.clearButtonsFailedLog')));
     }

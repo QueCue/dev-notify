@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
-import { digest, targetEpoch, stateTransaction, TTL, messageKey, validMessageId, replyChannel, type ReplyAccess, type Entry, type SessionTarget } from './reply-state.js';
+import { digest, targetEpoch, stateTransaction, TTL, messageKey, validMessageId, replyChannel, authorizedChat, type ReplyAccess, type Entry, type SessionTarget } from './reply-state.js';
 import { handleInteractionCallback, handleInteractionText, showInteraction } from './reply-interactions.js';
 import { injectReply, sanitizeReply, validateTarget, SessionLookupError } from './reply-platform.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
@@ -151,7 +151,8 @@ export async function drainReplies(access: ReplyAccess, context: EngineContext):
     if (!target || !pending.text) continue;
     try {
       const current = await context.fresh();
-      if (!current || current.identity !== access.identity || !current.policy.users.includes(pending.chat)) return;
+      if (!current || current.identity !== access.identity) return;
+      if (!authorizedChat(current, pending.chat)) continue;
       if (Date.now() - pending.updated > 5 * 60 * 1000) throw new ConfigError(t('reply.queueExpired'));
       if (!target.tracked || pending.epoch !== sessionEpoch(target) || !await (context.validate ?? (value => validateTarget(value)))(target)) throw new ConfigError(t('reply.sessionClosed'));
       const text = pending.text;

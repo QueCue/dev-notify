@@ -79,9 +79,21 @@ export function questionsContent(questions: Question[]): string {
     + (q.multiSelect ? t('reply.feishuMultiSelectHint')
       : t('reply.feishuSingleSelectHint'))).join('\n\n────────\n\n');
 }
-export async function showInteraction(access: ReplyAccess, id: string, chat: string, api: TelegramApi): Promise<void> {
+export async function showInteraction(access: ReplyAccess, id: string, chat: string, api: TelegramApi, synchronize = false): Promise<void> {
   const value = await stateTransaction(access, state => state.requests[id]);
   if (!active(value)) { await replyHint(api, chat, t('reply.inactiveTitle'), t('reply.inactiveBody')); return; }
+  if (!access.policy.users.includes(chat) || value.kind === 'permission' && access.policy.permissions !== true) return;
+  if (access.grants) {
+    const claimed = await stateTransaction(access, state => {
+      const current = state.requests[id];
+      if (!active(current) || current.index !== value.index) return false;
+      const displayed = current.displayed ??= {}, key = `${replyChannel(access)}:${chat}`;
+      if (synchronize && displayed[key] === value.index) return false;
+      // 与后台逐题同步共用发送登记；未知投递不自动重发。
+      displayed[key] = value.index; return true;
+    });
+    if (!claimed) return;
+  }
   if (replyChannel(access) === 'feishu') {
     const sent = await replyHint(api, chat, t('hook.notificationTitle'), interactionContent(value, true));
     const ids = sent?.message_ids ?? [sent?.message_id];
@@ -93,6 +105,7 @@ export async function showInteraction(access: ReplyAccess, id: string, chat: str
         state.entries[messageKey(access, chat, message)] = { session: value.session, epoch: value.epoch, request: id, question: value.index, updated: Date.now() };
         (current.messages ??= []).push({ chat, message });
       }
+      (current.displayed ??= {})[`${replyChannel(access)}:${chat}`] = value.index;
     });
     return;
   }
@@ -126,6 +139,7 @@ export async function showInteraction(access: ReplyAccess, id: string, chat: str
     const current = state.requests[id];
     if (!current) return;
     current.notified ??= {};
+    (current.displayed ??= {})[`${replyChannel(access)}:${chat}`] = value.index;
     const users = current.notified.telegram ??= [];
     if (!users.includes(chat)) users.push(chat);
   });
@@ -146,6 +160,7 @@ export async function handleInteractionCallback(access: ReplyAccess, callback: a
   const outcome = await stateTransaction(access, state => {
     const value = state.requests[id], target = value && state.sessions[value.session];
     if (!active(value) || value.index !== Number(index) || !target || target.unverified === true || targetEpoch(target) !== value.epoch) return 'expired';
+    if (value.kind === 'permission' && access.policy.permissions !== true) return 'expired';
     if (operation === 'l') { finishInteraction(value, { kind: 'not-applied', reason: 'closed', text: t('reply.closedLocal') }); return 'local'; }
     const question = value.questions[value.index]?.question;
     const previousIndex = value.index;
@@ -195,6 +210,7 @@ export async function handleInteractionText(access: ReplyAccess, id: string, cha
     const question = value.questions[value.index]?.question;
     const feishu = replyChannel(access) === 'feishu';
     const command = text.trim();
+    if (value.kind === 'permission' && access.policy.permissions !== true) return 'expired';
     if (feishu && command === '/close') {
       finishInteraction(value, { kind: 'not-applied', reason: 'closed', text: t('reply.closedLocal') });
       return 'closed';

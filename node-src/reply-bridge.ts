@@ -6,8 +6,9 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { appPaths, ConfigError, readConfigLanguage, type Env } from './config.js';
 import { resolveLocale, setLocale, t } from './i18n.js';
-import { accessReplies, atomicJson, readJson, replyDirectory, stateTransaction, replyChannel, digest, type ReplyAccess } from './reply-state.js';
+import { accessReplies, replyAccesses, channelAccess, atomicJson, readJson, replyDirectory, stateTransaction, replyChannel, digest, type ReplyAccess, type ReplyChannel } from './reply-state.js';
 import { telegramApi, type TelegramApi } from './reply-telegram.js';
+import { replyApi } from './reply-api.js';
 import { acquireBotLock, processState } from './reply-lock.js';
 import { drainReplies, drainFeishuInbox, processUpdate } from './reply-engine.js';
 import { feishuClient, feishuReplyApi, enqueueFeishuMessage, type FeishuFactory } from './reply-feishu.js';
@@ -51,7 +52,8 @@ async function recordFailure(file: string, source: 'start' | 'worker', attempt: 
 }
 
 interface Lease { pid: number; owner: string; ready: boolean; updated: number; error?: string;
-  identity?: string; botUsername?: string; problem?: BridgeProblem }
+  identity?: string; botUsername?: string; problem?: BridgeProblem;
+  channels?: { telegram?: boolean; feishu?: boolean } }
 const leasePath = (file: string) => path.join(replyDirectory(file), 'bridge.json');
 const controlPath = (file: string) => path.join(replyDirectory(file), 'stop.json');
 function alive(pid: unknown): boolean {
@@ -59,30 +61,47 @@ function alive(pid: unknown): boolean {
   // 权限不足不能当作已退出，否则升级维护可能提前启动第二个消费者。
   return processState(Number(pid)) !== 'dead';
 }
-function statusOf(lease: Lease | null): { running: boolean; ready: boolean; error?: string } {
+function statusOf(lease: Lease | null, channel?: ReplyChannel): { running: boolean; ready: boolean; error?: string } {
   const running = !!lease && alive(lease.pid);
   const fresh = !!lease && Number.isFinite(lease.updated) && Date.now() - lease.updated < 30000 && lease.updated <= Date.now() + 10000;
-  return { running, ready: lease?.ready === true && running && fresh && !lease.error && processState(lease.pid) === 'alive', error: lease?.error };
+  const ready = channel && lease?.channels ? lease.channels[channel] === true : lease?.ready === true
+    && (!lease.channels || lease.channels.telegram === true && lease.channels.feishu === true);
+  return { running, ready: !!lease && ready && running && fresh && !lease.error && processState(lease.pid) === 'alive'
+    && (!lease.channels || /^[a-f0-9]{32}$/.test(lease.owner)), error: lease?.error };
 }
 function leaseMatches(lease: Lease | null, access: ReplyAccess): boolean {
-  return !!lease && (lease.identity ? lease.identity === access.identity : replyChannel(access) === 'telegram');
+  const dual = replyAccesses(access).length > 1;
+  return !!lease && (!dual || !!lease.channels) && (lease.identity ? lease.identity === access.identity : !dual && replyChannel(access) === 'telegram');
+}
+function statusFor(lease: Lease | null, access?: ReplyAccess) {
+  const status = statusOf(lease, access?.view);
+  if (access && !leaseMatches(lease, access)) status.ready = false;
+  return status;
+}
+async function leaseReady(file: string, lease: Lease | null, access?: ReplyAccess): Promise<boolean> {
+  if (!statusFor(lease, access).ready) return false;
+  if (!lease?.channels) return true;
+  // 两路状态只属于这一个 owner；不能把换代租约或已经收到的停止请求当作就绪。
+  if ((await readJson(controlPath(file)))?.owner === lease.owner) return false;
+  const current = await readJson(leasePath(file)) as Lease | null;
+  return current?.owner === lease.owner && current.pid === lease.pid && statusFor(current, access).ready;
 }
 export async function bridgeStatus(file: string, access?: ReplyAccess): Promise<{ running: boolean; ready: boolean; error?: string; problem?: BridgeProblem }> {
   const lease = await readJson(leasePath(file)) as Lease | null;
-  const status = statusOf(lease);
-  if (access && !leaseMatches(lease, access)) status.ready = false;
+  const status = statusFor(lease, access);
+  if (status.ready) status.ready = await leaseReady(file, lease, access);
   const problem = !status.ready && lease?.error ? leaseProblem(lease.problem) : undefined;
   return { ...status, ...(problem ? { problem } : {}) };
 }
 export async function bridgeBotUsername(file: string, identity: string): Promise<string | null> {
   const lease = await readJson(leasePath(file)) as Lease | null;
   // 仅复用当前授权下、同一活跃租约的初始化结果；旧租约不提供兜底身份。
-  if (!lease || !statusOf(lease).ready || lease.identity !== identity || !/^[a-f0-9]{32}$/.test(lease.owner)
+  if (!lease || !statusOf(lease, 'telegram').ready || lease.identity !== identity || !/^[a-f0-9]{32}$/.test(lease.owner)
     || typeof lease.botUsername !== 'string' || !/^[A-Za-z0-9_]{5,64}$/.test(lease.botUsername)) return null;
   if ((await readJson(controlPath(file)))?.owner === lease.owner) return null;
   const current = await readJson(leasePath(file)) as Lease | null;
   if (!current || current.owner !== lease.owner || current.identity !== identity
-    || current.botUsername !== lease.botUsername || !statusOf(current).ready) return null;
+    || current.botUsername !== lease.botUsername || !statusOf(current, 'telegram').ready) return null;
   return lease.botUsername;
 }
 export async function stopBridge(file: string): Promise<boolean> {
@@ -119,9 +138,9 @@ async function startBridgeAttempt(file: string, env: Env, deps: BridgeStartDepen
   if (!access) throw new ConfigError(t('reply.bridgeAuthFirst'));
   attempt.stage = 'lease-read';
   const previous = await readJson(leasePath(file)) as Lease | null;
-  const existing = statusOf(previous);
+  const existing = statusFor(previous, access);
   if (existing.running) {
-    const ready = existing.ready && leaseMatches(previous, access);
+    const ready = existing.ready && await leaseReady(file, previous, access);
     if (!ready) attempt.stage = 'existing-unready';
     return ready;
   }
@@ -141,7 +160,7 @@ async function startBridgeAttempt(file: string, env: Env, deps: BridgeStartDepen
   for (let waitAttempt = 0; waitAttempt < 100; waitAttempt++) {
     await (deps.sleep ?? delay)(150);
     const lease = await readJson(leasePath(file)) as Lease | null;
-    if (statusOf(lease).ready && leaseMatches(lease, access)) return true;
+    if (lease?.pid === child.pid && lease?.owner !== previous?.owner && await leaseReady(file, lease, access)) return true;
     if (failed || exited || lease?.pid === child.pid && lease?.owner !== previous?.owner && lease?.error) {
       attempt.stage = failed ? 'spawn-error' : exited ? 'child-exit' : 'worker-error';
       // 只采用本次子进程的新租约，不拿历史 worker 失败冒充当前启动原因。
@@ -185,24 +204,56 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const botDirectory = path.join(appPaths(process.platform, env).data, 'reply-bots');
   await mkdir(botDirectory, { recursive: true, mode: 0o700 });
-  const lockKey = replyChannel(access) === 'feishu' ? digest(JSON.stringify(['feishu', access.config.feishu.appId])) : access.policy.bot;
-  const lockPath = path.join(botDirectory, lockKey + '.lock');
+  const views = replyAccesses(access), dual = views.length > 1;
+  const lockPaths = [...new Set(views.map(view => {
+    const key = replyChannel(view) === 'feishu' ? digest(JSON.stringify(['feishu', view.config.feishu.appId])) : view.policy.bot;
+    return path.join(botDirectory, key + '.lock');
+  }))].sort();
   const owner = randomBytes(16).toString('hex');
+  const locks: Awaited<ReturnType<typeof acquireBotLock>>[] = [];
   attempt.stage = 'bot-lock';
-  const lock = await acquireBotLock(lockPath, owner);
-  const lease: Lease = { pid: process.pid, owner, ready: false, updated: Date.now() };
-  let stopping = false;
+  try { for (const lockPath of lockPaths) locks.push(await acquireBotLock(lockPath, owner)); }
+  catch (error) {
+    // 固定顺序拿锁，第二把失败时撤回本次已经持有的锁，不留下半个双渠道 worker。
+    await Promise.allSettled(locks.reverse().map(lock => lock.release()));
+    throw error;
+  }
+  const lease: Lease = { pid: process.pid, owner, ready: false, updated: Date.now(), identity: access.identity,
+    ...(dual ? { channels: { telegram: false, feishu: false } } : {}) };
+  let stopping = false, telegramReady = false, leasePublished = false;
+  let client: ReturnType<typeof feishuClient> | undefined;
   const stop = () => { stopping = true; };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
-  const fresh = async () => await isStopped() ? null : accessReplies(file, env);
+  const isStopped = async () => {
+    if (stopping || options.stopped?.() === true || (await readJson(controlPath(file)))?.owner === owner) return true;
+    return dual && leasePublished && (await readJson(leasePath(file)))?.owner !== owner;
+  };
+  const fresh = async () => {
+    if (await isStopped()) { stopping = true; return null; }
+    const current = await accessReplies(file, env);
+    if (!current || current.identity !== initialAccess.identity || await isStopped()) { stopping = true; return null; }
+    return current;
+  };
+  const freshChannel = (channel: ReplyChannel) => async () => {
+    const current = await fresh();
+    return current ? channelAccess(current, channel) : null;
+  };
+  const freshTelegram = freshChannel('telegram'), freshFeishu = freshChannel('feishu');
   const log = options.log ?? (() => {});
   let lastActivity = Date.now();
-  const isStopped = async () => stopping || options.stopped?.() === true || (await readJson(controlPath(file)))?.owner === owner;
   let writes = Promise.resolve();
   const saveLease = () => {
+    if (dual) {
+      lease.channels = { telegram: telegramReady && !stopping, feishu: client?.state === 'connected' && !stopping };
+      lease.ready = lease.channels.telegram === true && lease.channels.feishu === true;
+    }
     lease.updated = Date.now();
     const snapshot = { ...lease };
-    const next = writes.then(() => atomicJson(leasePath(file), snapshot));
+    const next = writes.then(async () => {
+      if (dual && leasePublished && (await readJson(leasePath(file)))?.owner !== owner) { stopping = true; return; }
+      await atomicJson(leasePath(file), snapshot);
+      leasePublished = true;
+    });
     writes = next.catch(() => {});
     return next;
   };
@@ -218,49 +269,63 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
       void saveLease().catch(() => { heartbeatFailed = true; stopping = true; }).finally(() => { beating = false; });
     }, heartbeatMs);
     heartbeat.unref();
-    if (replyChannel(access) === 'feishu') {
-      const client = feishuClient(access.config, {
+    const initialFeishu = channelAccess(access, 'feishu');
+    let clientStart: Promise<void> | undefined, clientFailed = false;
+    if (initialFeishu) {
+      client = feishuClient(initialFeishu.config, {
         onMessage: async event => {
-          const current = await fresh();
-          if (!current || current.identity !== access.identity) return;
+          const current = await freshFeishu();
+          if (!current || stopping || await isStopped()) return;
           await enqueueFeishuMessage(current, event);
+          lastActivity = Date.now();
         },
         onError: () => { log(t('feishu.failed')); },
       }, options.feishuFactory);
-      try {
-        attempt.stage = 'ready';
-        await client.start();
-        lease.ready = client.state === 'connected'; lease.identity = access.identity; await saveLease();
-        const api = options.api?.(access) ?? feishuReplyApi(access.config, client);
-        const refreshMs = options.cardRefreshMs ?? 10000;
-        if (!Number.isSafeInteger(refreshMs) || refreshMs < 10) throw new ConfigError(t('reply.bridgeFailed'));
-        let iteration = 0, lastCardRefresh = 0;
-        while (!await isStopped() && iteration++ < (options.maxIterations ?? Infinity)) {
-          setLocale(resolveLocale(options.lang, env, await readConfigLanguage(file)));
-          const current = await fresh();
-          if (!current || current.identity !== access.identity) break;
-          access = current;
-          lease.ready = client.state === 'connected'; await saveLease();
-          if (client.state === 'failed' || client.state === 'stopped') throw new ConfigError(t('feishu.failed'));
-          const context = { api, fresh, validate: options.validate, inject: options.inject };
-          attempt.stage = 'polling';
-          try { await drainFeishuInbox(access, context); }
-          catch { log(t('reply.handleFailedLog')); }
-          await drainReplies(access, context);
-          await drainInteractionFeedback(access, api, fresh, log);
-          if (Date.now() - lastCardRefresh >= refreshMs && client.state === 'connected') {
-            lastCardRefresh = Date.now();
-            await refreshFeishuReplyCards(access, (id, content) => client.updateMessage(id, content), {
-              fresh, inspect: options.cardInspect, env, log,
-            }).catch(() => log(t('feishu.replyRefreshFailed')));
-          }
-          await (options.sleep ?? delay)(250);
-        }
-        if (heartbeatFailed) throw new ConfigError(t('reply.bridgeFailed'));
-      } finally { client.stop(); }
+      attempt.stage = 'ready';
+      // 同一 worker 中先启动 WS；TG 初始化期间只允许 FS view 校验并持久入队。
+      clientStart = client.start();
+      void clientStart.catch(() => { clientFailed = true; }); // 初始化先失败时仍由 finally 停止连接，不留下未处理拒绝。
+    }
+    const apiFor = (view: ReplyAccess): TelegramApi => options.api?.(view) ?? (replyChannel(view) === 'feishu'
+      ? feishuReplyApi(view.config, client) : telegramApi(view.config.telegram.token));
+    const refreshMs = options.cardRefreshMs ?? 10000;
+    if (client && (!Number.isSafeInteger(refreshMs) || refreshMs < 10)) throw new ConfigError(t('reply.bridgeFailed'));
+    let lastCardRefresh = 0;
+    const refreshCards = async (view: ReplyAccess) => {
+      const active = client;
+      if (!active || active.state !== 'connected' || Date.now() - lastCardRefresh < refreshMs) return;
+      lastCardRefresh = Date.now();
+      await refreshFeishuReplyCards(view, (id, content) => active.updateMessage(id, content), {
+        fresh: freshFeishu, inspect: options.cardInspect, env, log,
+      }).catch(() => log(t('feishu.replyRefreshFailed')));
+    };
+    if (!channelAccess(access, 'telegram')) {
+      const active = client!;
+      await clientStart;
+      lease.ready = active.state === 'connected'; await saveLease();
+      const api = apiFor(initialFeishu!);
+      let iteration = 0;
+      while (!await isStopped() && iteration++ < (options.maxIterations ?? Infinity)) {
+        setLocale(resolveLocale(options.lang, env, await readConfigLanguage(file)));
+        const current = await fresh();
+        if (!current) break;
+        access = current;
+        const view = channelAccess(access, 'feishu')!;
+        lease.ready = active.state === 'connected'; await saveLease();
+        if (active.state === 'failed' || active.state === 'stopped') throw new ConfigError(t('feishu.failed'));
+        const context = { api, fresh, validate: options.validate, inject: options.inject };
+        attempt.stage = 'polling';
+        try { await drainFeishuInbox(view, { ...context, fresh: freshFeishu }); }
+        catch { log(t('reply.handleFailedLog')); }
+        await drainReplies(access, context);
+        await drainInteractionFeedback(access, api, fresh, log);
+        await refreshCards(view);
+        await (options.sleep ?? delay)(250);
+      }
+      if (heartbeatFailed) throw new ConfigError(t('reply.bridgeFailed'));
       return;
     }
-    let api = (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
+    let api = apiFor(channelAccess(access, 'telegram')!);
     let initializationRetries = 0;
     const initialize = async (method: 'getWebhookInfo' | 'getMe'): Promise<any> => {
       for (let retry = 0; ; retry++) {
@@ -300,7 +365,10 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
         });
       }
     }
+    if (!await fresh()) return;
+    if (dual && (clientFailed || client?.state === 'failed' || client?.state === 'stopped')) throw new ConfigError(t('feishu.failed'));
     attempt.stage = 'ready';
+    telegramReady = true;
     lease.identity = access.identity; lease.ready = true; await saveLease();
     attempt.stage = 'polling';
     let iteration = 0, failures = 0;
@@ -313,10 +381,21 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
         // 修改授权或 Bot 必须重启并重新核验，丢弃旧长轮询结果。
         break;
       }
-      access = current; api = (options.api ?? (value => telegramApi(value.config.telegram.token)))(access);
-      const context = { api, fresh, validate: options.validate, inject: options.inject };
+      access = current;
+      const telegram = channelAccess(access, 'telegram')!;
+      api = apiFor(telegram);
+      const businessApi = dual ? replyApi(access, view => replyChannel(view) === 'telegram' ? api : apiFor(view)) : api;
+      const context = { api: businessApi, fresh, validate: options.validate, inject: options.inject };
+      if (dual) {
+        await saveLease();
+        if (clientFailed || client?.state === 'failed' || client?.state === 'stopped') throw new ConfigError(t('feishu.failed'));
+        const feishu = channelAccess(access, 'feishu')!;
+        try { await drainFeishuInbox(feishu, { ...context, fresh: freshFeishu }); }
+        catch { log(t('reply.handleFailedLog')); }
+        await refreshCards(feishu);
+      }
       await drainReplies(access, context);
-      await drainInteractionFeedback(access, api, fresh, log);
+      await drainInteractionFeedback(access, businessApi, fresh, log);
       if (await isStopped()) break;
       const offset = await stateTransaction(access, state => state.offset);
       let updates;
@@ -334,7 +413,7 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
       if (!Array.isArray(updates)) throw new ConfigError(t('reply.updatesInvalid'));
       for (const update of updates) {
         if (await isStopped()) break;
-        try { await processUpdate(access, update, context); }
+        try { await processUpdate(telegram, update, { ...context, fresh: freshTelegram }); }
         catch { log(t('reply.handleFailedLog')); }
       }
       if (updates.length) lastActivity = Date.now();
@@ -353,11 +432,14 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
   } finally {
     attempt.stage = 'cleanup';
     stopHeartbeat();
-    await writes;
-    process.off('SIGTERM', stop); process.off('SIGINT', stop);
-    try {
-      const current = await readJson(leasePath(file)).catch(() => null);
-      if (current?.owner === owner && !lease.error) await unlink(leasePath(file)).catch(() => {});
-    } finally { await lock.release(); }
+    try { client?.stop(); }
+    finally {
+      await writes;
+      process.off('SIGTERM', stop); process.off('SIGINT', stop);
+      try {
+        const current = await readJson(leasePath(file)).catch(() => null);
+        if (current?.owner === owner && !lease.error) await unlink(leasePath(file)).catch(() => {});
+      } finally { await Promise.all(locks.reverse().map(lock => lock.release())); }
+    }
   }
 }

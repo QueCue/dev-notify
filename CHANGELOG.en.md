@@ -6,6 +6,15 @@ English | [简体中文](CHANGELOG.md)
 
 No changes yet.
 
+## 0.4.0 — 2026-11-09
+
+- Add simultaneous Telegram and Feishu replies via setup option 3 (Both), gathering users and tool-permission capability separately while retaining legacy single-channel policies. Existing grants are not broadened automatically.
+- One worker holds both consumer locks and shares session queues and interaction state. An existing pending reply cannot be overwritten by the other channel; receipts return to the origin. Question progress and registered/processed state synchronize, accepting only the first valid answer per question or permission decision.
+- Dual grants use version 2 policies and a shared identity. Authorization changes stop the old worker and rebuild routing; invalid channels never inherit another channel's grant. Readiness is per-channel, so Feishu reconnection does not hide a ready Telegram channel.
+- Full Windows x64 / Node 24.12.0 regression: 448 tests, 447 passed, 0 failed, and 1 explicit native-credential test skipped; all 18 new dual-channel tests passed. Strict build, dry-run packing, and actual candidate allowlist/SHA512 verification passed.
+- The stable release uses npm `latest`; registry state is authoritative. Dual-channel replies require explicitly rerunning `reply setup` and selecting option 3 (Both). Version 2 dual-channel policies are incompatible with older releases; after downgrading, rerun `reply setup` to configure single-channel authorization.
+- Real simultaneous Telegram/Feishu and cross-platform field acceptance remains pending; offline regression is not real-platform validation.
+
 ## 0.3.2 — 2026-11-09
 
 - Meet the platform prerequisite for PATCHing Feishu cards: explicitly set `config.update_multi: true` on reply-enabled cards when sending, retaining wide-screen configuration. Other notifications do not gain dynamic-update scope. Use this version or later for dynamic status.

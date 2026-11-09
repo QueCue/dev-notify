@@ -107,7 +107,9 @@ dev-notify reply start
 dev-notify reply status
 ```
 
-When both Telegram and Feishu app channels are available, `reply setup` lets you choose one. **Each configuration has exactly one reply channel**, not simultaneous remote input from both. Authorize only trusted users in the current notification list: Telegram private-chat chat IDs or Feishu app user `open_id` values. Notification recipients, group members, and card viewers do not automatically gain input rights. Tool permission approval requires a separate opt-in.
+When Telegram and a Feishu app are both available, `reply setup` offers **1) Telegram, 2) Feishu, 3) Both**. Choose `3` to authorize private-chat users and tool-permission capability separately for each channel, followed by one final confirmation. Dual-channel replies require **0.4.0 or later**; upgrade first if option `3` is absent.
+
+Authorize only trusted users in the current notification list: Telegram private-chat chat IDs or Feishu app user `open_id` values. Grants are channel-specific; notification recipients, group members, and card viewers do not automatically gain input rights. Tool-permission capability is not inherited across channels. Existing single-channel grants remain valid and are not broadened automatically by upgrading.
 
 After reauthorizing or switching reply channels, run `dev-notify reply stop` followed by `dev-notify reply start` so the old bridge exits and the new authorization is loaded.
 
@@ -120,6 +122,7 @@ After reauthorizing or switching reply channels, run `dev-notify reply stop` fol
 - For dynamic status, use **0.3.2 or later**: the bridge periodically updates the original card with **🔵 Working · replies queued**, **🟡 Verification paused**, or **⚪ Reply expired / Session closed / Session switched**. Reply mappings last at most 24 hours; the card shows their expiry, but sessions can close or switch earlier. Checks normally run every 10 seconds; batched updates can take longer.
 - Status is not a permanent guarantee: network loss, computer shutdown, bridge exit, or revoked authorization can leave a card stale. Observe the printed expiry; incoming replies are still reverified. Notifications sent before upgrading do not gain dynamic status retroactively.
 - Reply entry points require a ready bridge and a verifiable session identity. Feishu uses quoted text replies, not card-action callbacks.
+- Both channels share one pending slot per session: an existing pending reply is neither overwritten nor duplicated by the other channel. Receipts return to the originating channel. Each question or permission decision accepts the first valid registered answer; the other side then shows registered/processed status, and multi-question progress synchronizes.
 - Replies received while Claude is working queue locally and are attempted after completion. The queue is canceled after 5 minutes, new local input, or a target change.
 - A reply is limited to 4000 Unicode characters. Newlines and control characters are cleaned, and text is submitted as one terminal input, not executed as a shell command.
 - "Queued", "Forwarded", and "Claude received" are different states. Receipt is confirmed only after a matching local input event. Failed or unknown-result input is not retried automatically.

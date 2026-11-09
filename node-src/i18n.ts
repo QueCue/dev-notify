@@ -9,7 +9,7 @@ type Message = string | ((params: Params) => string);
 const zh = {
   'feishu.invalidConfig': '飞书应用配置无效，请检查 mode、App ID 和 open_ids。',
   'feishu.failed': '飞书应用通讯失败；结果未知时不会自动重发。',
-  'feishu.channelPrompt': '远程回复渠道：1) Telegram  2) 飞书自建应用 [1]：',
+  'feishu.channelPrompt': '远程回复渠道：1) Telegram  2) 飞书自建应用  3) 两者同时 [{current}]：',
   'feishu.channelStatus': '当前远程回复渠道：{channel}',
   'feishu.setupNotice': '飞书使用自建应用长连接收消息；每个应用只运行一个 dev-notify 桥接，不要与其他消费者共用。仅授权 open_id 对应的可信私聊用户。',
   'feishu.setupFirst': '请先配置可用的 Telegram 或飞书自建应用通知及接收人。',
@@ -577,7 +577,7 @@ export type MessageKey = keyof typeof zh;
 const en: Record<MessageKey, Message> = {
   'feishu.invalidConfig': 'Invalid Feishu app configuration. Check mode, App ID, and open_ids.',
   'feishu.failed': 'Feishu app communication failed; unknown outcomes are not automatically retried.',
-  'feishu.channelPrompt': 'Remote reply channel: 1) Telegram  2) Feishu app [1]: ',
+  'feishu.channelPrompt': 'Remote reply channels: 1) Telegram  2) Feishu app  3) Both [{current}]:',
   'feishu.channelStatus': 'Current remote reply channel: {channel}',
   'feishu.setupNotice': 'Feishu receives messages through an app WebSocket. Run only one dev-notify bridge per app; do not share it with other consumers. Authorize only trusted private-chat open_id users.',
   'feishu.setupFirst': 'Configure working Telegram or Feishu app notifications and recipients first.',

@@ -11,7 +11,7 @@ import { ReplyPreparationError, safeDeliveryReason, safeFailureReason, saveNotif
 import { createDeliveryTracer, type DeliveryTrace, type DeliveryTracerOptions } from './delivery-trace.js';
 import { lifecycleHook, interactionHook, attachReply, mapReplies, notificationCoverage, type ReplyHookOptions } from './reply-hooks.js';
 import { replyCardFooter } from './feishu-card-status.js';
-import { TTL } from './reply-state.js';
+import { TTL, channelAccess } from './reply-state.js';
 
 export const MAX_HOOK_BYTES = 8 * 1024 * 1024;
 export async function readHookInput(input: Readable = process.stdin, limit = MAX_HOOK_BYTES): Promise<Uint8Array> {
@@ -162,13 +162,21 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
   let channels = 0;
   const tracer = createDeliveryTracer(undefined, undefined, context.deliveryTrace);
   try {
-    let binding = null;
-    try { binding = await attachReply(notification, data, configFile, options); }
-    catch (error) {
-      diagnostic.reply = error instanceof ReplyPreparationError ? 'getme-failed' : 'check-failed';
-      diagnostic.replyReason = error instanceof ReplyPreparationError ? error.message : safeFailureReason(error);
-      context.err(error instanceof ReplyPreparationError ? error.message : t('hook.replyNotReady'));
+    const bindings: Partial<Record<Channel, Awaited<ReturnType<typeof attachReply>>>> = {};
+    const reasons: Partial<Record<Channel, ReplyDiagnosticCode>> = {};
+    for (const channel of ['telegram', 'feishu'] as const) {
+      if (!ready(config, channel) || channel === 'feishu' && config.feishu.mode !== 'app') continue;
+      try { bindings[channel] = await attachReply(notification, data, configFile, { ...options, channel,
+        replyDiagnostic: code => { options.replyDiagnostic(code); reasons[channel] = code; } }); }
+      catch (error) {
+        diagnostic.reply = error instanceof ReplyPreparationError ? 'getme-failed' : 'check-failed';
+        reasons[channel] = diagnostic.reply;
+        diagnostic.replyReason = error instanceof ReplyPreparationError ? error.message : safeFailureReason(error);
+        context.err(error instanceof ReplyPreparationError ? error.message : t('hook.replyNotReady'));
+      }
     }
+    if (bindings.telegram || bindings.feishu) diagnostic.reply = 'attached';
+    const feishuBinding = bindings.feishu ?? (bindings.telegram && !channelAccess(bindings.telegram.access, 'feishu') ? bindings.telegram : null);
     let covered = { telegram: [] as string[], feishu: false };
     try { covered = await notificationCoverage(data, configFile, config, options); }
     catch { context.err(t('hook.coverageFailed')); }
@@ -179,13 +187,14 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
       try {
         if (channel === 'feishu' && covered.feishu) continue;
         const plan = channel === 'feishu' && config.feishu.mode === 'app' && data.hook_event_name === 'Stop'
-          ? feishuCompletionPlan(notification, config, binding, diagnostic.reply)
+          ? feishuCompletionPlan(notification, config, feishuBinding, reasons.feishu ?? diagnostic.reply)
           : makePlan(channel, notification, config);
         if (channel === 'telegram' && covered.telegram.length) {
           plan.items = plan.items.filter(item => !covered.telegram.includes(item.recipient));
           plan.recipients = new Set(plan.items.map(item => item.recipient)).size;
           if (!plan.items.length) continue;
         }
+        const binding = bindings[channel];
         if (binding) mapReplies(plan, binding, channel === 'feishu' && config.feishu.mode === 'app' ? { footer: notification.footer } : undefined);
         const traced = channel === 'telegram' ? tracer.telegram(plan) : undefined;
         let result;
