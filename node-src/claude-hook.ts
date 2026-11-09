@@ -111,7 +111,10 @@ function feishuCompletionPlan(message: Message, config: Config,
     const recipientConfig: Config = { ...config, feishu: { ...config.feishu, openIds: [recipient] } };
     const plan = makePlan('feishu', { ...message, title: `${status}｜${message.title}`, level: available ? 'warn' : 'info',
       footer: available ? replyCardFooter(detail, Date.now() + TTL, message.footer) : [detail, message.footer].filter(Boolean).join('\n') }, recipientConfig);
-    if (!available) for (const item of plan.items) item.payload.card.header.template = 'grey';
+    for (const item of plan.items) {
+      if (available) item.payload.card.config.update_multi = true; // 飞书 PATCH 只支持显式启用共享更新的卡片。
+      else item.payload.card.header.template = 'grey';
+    }
     return plan.items;
   });
   return { channel: 'feishu', recipients: config.feishu.openIds?.length ?? 0, items };

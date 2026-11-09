@@ -6,6 +6,12 @@ English | [简体中文](CHANGELOG.md)
 
 No changes yet.
 
+## 0.3.2 — 2026-11-09
+
+- Meet the platform prerequisite for PATCHing Feishu cards: explicitly set `config.update_multi: true` on reply-enabled cards when sending, retaining wide-screen configuration. Other notifications do not gain dynamic-update scope. Use this version or later for dynamic status.
+- npm accepted 0.3.1 before the cancellation request took effect. Preserve its version and tag rather than overwriting the package. It lacks shared-update configuration, so cards may remain Preparing replies. This version fixes new notifications and does not retrofit old cards.
+- Add offline regression ensuring shared-update configuration survives both actual send and PATCH payloads. Full regression: 430 tests, 429 passed, 0 failed, and 1 explicit native-credential test skipped. Candidate allowlist/SHA512 verification and isolated installation passed. Real Feishu dynamic-update acceptance remains pending.
+
 ## 0.3.1 — 2026-11-09
 
 - Add explicit reply status and unavailability reasons to Feishu app completion-card headers, specific to each recipient's authorization. Every segment retains its indicator; Telegram/Webhook and ordinary manual sends are unchanged.

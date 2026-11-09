@@ -163,6 +163,22 @@ async function refreshCards(ctx, options = {}, update) {
   });
   return updates;
 }
+test('实际发送及更新卡片均显式启用共享更新，保留原配置和正文', async t => {
+  const ctx = await fixture(t);
+  const { plans } = await dispatchCompletion(ctx);
+  const payload = plans[0].items[0].payload.card;
+  assert.equal(payload.config.update_multi, true);
+  assert.equal(payload.config.wide_screen_mode, true);
+  const result = await deliverFeishuPlan(plans[0], { sendMessage: async message => {
+    const content = JSON.parse(message.content);
+    assert.equal(content.config.update_multi, true);
+    assert.equal(content.elements[0].content, '测试完成正文');
+    return { messageId: 'om_platform_contract' };
+  } }, async () => {});
+  assert.equal(result.ok, true);
+  const updates = await refreshCards(ctx);
+  assert.ok(updates.every(update => update.card.config.update_multi === true));
+});
 test('保存映射并核验后原卡片才变为可回复，映射缺失不能显示绿色', async t => {
   const ctx = await fixture(t); await dispatchCompletion(ctx);
   assert.equal((await snapshot(ctx.access)).feishuCards.om_status_0.status, 'preparing');
