@@ -399,9 +399,9 @@ test('独立授权默认关闭，通知接收人不会自动获得远程输入�
   await assert.rejects(configureReplies(ctx.file, ui(['-333']), ctx.env), /私聊/);
   await assert.rejects(configureReplies(ctx.file, ui(['999']), ctx.env), /私聊用户/);
 });
-test('授权必须确认，明确选择用户及逐次权限；重新授权不继承消息', async t => {
+test('明确选择用户及逐次权限后直接保存；重新授权不继承消息', async t => {
   const ctx = await temp(t);
-  await configureReplies(ctx.file, ui(['111', 'n', 'y']), ctx.env);
+  await configureReplies(ctx.file, ui(['111', 'n']), ctx.env);
   const access = await accessReplies(ctx.file, ctx.env);
   assert.equal(access.policy.permissions, false); assert.notEqual(access.identity, ctx.access.identity);
   assert.equal(Object.keys((await snapshot(access)).entries).length, 0);
@@ -410,7 +410,7 @@ test('授权必须确认，明确选择用户及逐次权限；重新授权不�
 test('授权取消不写入，禁用需确认且不更改通知配置', async t => {
   const ctx = await temp(t), before = await readFile(ctx.file);
   const policyBefore = await readFile(policyPath(ctx.file));
-  assert.equal(await configureReplies(ctx.file, ui(['111', 'n', 'n']), ctx.env), false);
+  assert.equal(await configureReplies(ctx.file, ui(['']), ctx.env), false);
   assert.deepEqual(await readFile(policyPath(ctx.file)), policyBefore);
   assert.equal(await disableReplies(ctx.file, ui(['n'])), false);
   assert.equal(await disableReplies(ctx.file, ui(['y'])), true);

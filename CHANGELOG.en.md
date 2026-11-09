@@ -6,6 +6,14 @@ English | [简体中文](CHANGELOG.md)
 
 No changes yet.
 
+## 0.4.1 — 2026-11-09
+
+- Fix `reply setup` rejecting copied Chinese list separators: accept ASCII/Chinese commas, Chinese enumeration commas, whitespace, and semicolons, deduplicate, then strictly validate against each channel's recipients. Display available IDs with ASCII commas for direct copying.
+- Make authorization prompts channel-specific: Telegram steps show only Telegram chat_id, and Feishu steps show only Feishu open_id, in both languages and single/dual-channel setup.
+- Remove the final `reply setup` summary confirmation as requested while retaining each channel's tool-permission question and default-off behavior. Save atomically after all selected channels are complete; blank lists, interruptions, and concurrent configuration changes still do not commit partial grants.
+- Replace the obsolete Telegram-setup notice saying Feishu jumps to Telegram. Dual-channel setup still configures Telegram and the Feishu app in sequence; Feishu replies do not pass through Telegram.
+- Full Windows / Node 24.12.0 regression: 467 tests, 466 passed, 0 failed, and 1 explicit native-credential test skipped. Coverage includes 8 separators, copied lists proceeding to Feishu setup, deduplication, invalid recipient rejection, channel-specific prompts in both languages and single/dual-channel setup, removal of summary confirmation, default-off tool permissions, and no partial grants after interruption.
+
 ## 0.4.0 — 2026-11-09
 
 - Add simultaneous Telegram and Feishu replies via setup option 3 (Both), gathering users and tool-permission capability separately while retaining legacy single-channel policies. Existing grants are not broadened automatically.

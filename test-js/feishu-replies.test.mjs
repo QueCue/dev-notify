@@ -313,7 +313,7 @@ test('飞书向导：应用凭据仅写 keyring 引用，支持重复运行保�
 });
 test('飞书独立授权：只允许名单中 open_id，凭据或名单变化撤销旧路由', async t => {
   const ctx = await fixture(t);
-  assert.equal(await configureReplies(ctx.file, ui([USER, 'n', 'y']), ctx.env), true);
+  assert.equal(await configureReplies(ctx.file, ui([USER, 'n']), ctx.env), true);
   const access = await accessReplies(ctx.file, ctx.env);
   assert.equal(access.policy.channel, 'feishu'); assert.equal(access.policy.permissions, false);
   assert.notEqual(access.identity, ctx.access.identity);
@@ -326,7 +326,7 @@ test('双渠道通知保留，但 reply setup 明确选择一个回复渠道', a
   const raw = { ...RAW, telegram: { enabled: true, chat_ids: ['111'] } };
   const ctx = await fixture(t, raw);
   const env = { ...ctx.env, TELEGRAM_BOT_TOKEN: '123:FAKE' };
-  assert.equal(await configureReplies(ctx.file, ui(['2', USER, 'n', 'y']), env), true);
+  assert.equal(await configureReplies(ctx.file, ui(['2', USER, 'n']), env), true);
   assert.equal((await accessReplies(ctx.file, env)).policy.channel, 'feishu');
 });
 test('入站过滤：拒绝群聊、机器人、未授权、陈旧、非文本和畸形事件', async t => {

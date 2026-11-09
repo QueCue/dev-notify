@@ -15,13 +15,14 @@ import { dispatchClaudeHook } from '../dist/claude-hook.js';
 import { lifecycleHook, interactionHook } from '../dist/reply-hooks.js';
 import { runBridge, bridgeStatus } from '../dist/reply-bridge.js';
 import { acquireBotLock } from '../dist/reply-lock.js';
+import { getLocale, setLocale } from '../dist/i18n.js';
 
 globalThis.fetch = async () => { throw new Error('禁止真实网络'); };
 const USER = 'ou_FAKE_USER';
 const TARGET = { session: 'dual-session', pid: 12345, birth: 'FAKE_BIRTH', tty: 'FAKE_TTY', title: '双渠道隔离测试', cwd: 'C:/fake', tracked: true, working: false, updated: Date.now() };
 const QUESTION = { question: '选哪个？', header: '选择', options: [{ label: 'A', description: '选项A' }, { label: 'B', description: '选项B' }] };
-function ui(answers = []) { const output = []; return { output, out: text => output.push(text), secret: async () => assert.fail('不询问凭据'),
-  text: async () => { assert.ok(answers.length, '意外询问'); return answers.shift(); } }; }
+function ui(answers = []) { const output = [], questions = []; return { output, questions, out: text => output.push(text), secret: async () => assert.fail('不询问凭据'),
+  text: async prompt => { questions.push(prompt); assert.ok(answers.length, '意外询问'); return answers.shift(); } }; }
 async function fixture(t, permissions = { telegram: true, feishu: true }) {
   const root = await mkdtemp(path.join(tmpdir(), 'dev-notify-dual-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -63,14 +64,80 @@ const fsMessage = (id, text, parent = 'om_notice') => ({ event_id: 'evt_' + id, 
   message: { message_id: id, chat_id: 'oc_private', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text }), create_time: String(Date.now()), parent_id: parent } });
 async function receiveFs(ctx, message) { await enqueueFeishuMessage(ctx.fs, message); await drainFeishuInbox(ctx.fs, ctx.context(ctx.fs)); }
 
-test('reply setup 可同时授权两渠道，权限 opt-in 分开且最后统一确认', async t => {
-  const ctx = await fixture(t), prompts = ui(['3', '111', 'n', USER, 'y', 'y']);
+test('reply setup 逐渠道询问工具权限，答完直接保存不再汇总确认', async t => {
+  const ctx = await fixture(t), prompts = ui(['3', '111', 'n', USER, 'y']);
   assert.equal(await configureReplies(ctx.file, prompts, ctx.env), true);
   const access = await accessReplies(ctx.file, ctx.env), views = replyAccesses(access);
   assert.equal(views.length, 2); assert.equal(views[0].policy.permissions, false); assert.equal(views[1].policy.permissions, true);
   assert.equal(views[0].identity, views[1].identity); assert.equal(views[0].file, views[1].file);
   assert.deepEqual(views.map(view => view.policy.users), [['111'], [USER]]);
   assert.notEqual(access.identity, ctx.access.identity);
+  assert.equal(prompts.questions.length, 5);
+  assert.equal(prompts.questions.filter(prompt => prompt.includes('逐次批准或拒绝工具权限')).length, 2);
+  assert.doesNotMatch(prompts.questions.join('\n'), /确认启用远程回复/);
+});
+for (const [name, selection, expectedChannels] of [['TG', '1', ['telegram']], ['飞书', '2', ['feishu']], ['双渠道', '3', ['telegram', 'feishu']]])
+test(`${name}工具权限回车默认关闭，未再次确认也能保存回复授权`, async t => {
+  const ctx = await fixture(t);
+  const answers = selection === '3' ? ['3', '111', '', USER, ''] : selection === '1' ? ['1', '111', ''] : ['2', USER, ''];
+  const prompts = ui(answers);
+  assert.equal(await configureReplies(ctx.file, prompts, ctx.env), true);
+  const access = await accessReplies(ctx.file, ctx.env);
+  assert.deepEqual(replyAccesses(access).map(view => view.policy.channel ?? 'telegram'), expectedChannels);
+  assert.ok(replyAccesses(access).every(view => view.policy.permissions === false));
+  assert.equal(prompts.questions.length, selection === '3' ? 5 : 3);
+  assert.equal(prompts.questions.filter(prompt => prompt.includes('逐次批准或拒绝工具权限')).length, expectedChannels.length);
+});
+test('双渠道配置中途取消或中断仍不保存任何部分授权', async t => {
+  const ctx = await fixture(t), prompts = ui(['3', '111', 'y', USER]);
+  const original = prompts.text;
+  prompts.text = async prompt => {
+    if (prompts.questions.length === 4) throw new Error('模拟用户中断');
+    return original(prompt);
+  };
+  await assert.rejects(configureReplies(ctx.file, prompts, ctx.env), /模拟用户中断/);
+  assert.equal((await accessReplies(ctx.file, ctx.env)).identity, ctx.access.identity);
+});
+for (const language of ['zh', 'en']) for (const selection of ['1', '2', '3'])
+test(`授权输入只显示当前渠道ID类型：${language}／选项${selection}`, async t => {
+  const ctx = await fixture(t), previous = getLocale();
+  try {
+    setLocale(language);
+    const answers = selection === '3' ? ['3', '111', 'n', USER, 'n']
+      : selection === '1' ? ['1', '111', 'n'] : ['2', USER, 'n'];
+    const prompts = ui(answers);
+    assert.equal(await configureReplies(ctx.file, prompts, ctx.env), true);
+    const idPrompts = prompts.questions.filter(prompt => /chat_id|open_id/.test(prompt));
+    assert.equal(idPrompts.length, selection === '3' ? 2 : 1);
+    if (selection !== '2') {
+      assert.match(idPrompts[0], /Telegram.*chat_id/);
+      assert.doesNotMatch(idPrompts[0], /飞书|Feishu|open_id/);
+    }
+    if (selection !== '1') {
+      const feishu = idPrompts.at(-1);
+      assert.match(feishu, /(?:飞书|Feishu).*open_id/);
+      assert.doesNotMatch(feishu, /Telegram|chat_id/);
+    }
+  } finally { setLocale(previous); }
+});
+for (const [name, separator] of [['英文逗号', ','], ['中文逗号', '，'], ['顿号', '、'], ['空格', ' '], ['英文分号', ';'], ['中文分号', '；'], ['换行', '\n'], ['制表符', '\t']])
+test(`双渠道向导接受${name}分隔的用户名单并去重`, async t => {
+  const ctx = await fixture(t);
+  const prompts = ui(['3', ` 111${separator}222${separator}111 `, 'n', `${USER}${separator}ou_OTHER${separator}${USER}`, 'n']);
+  assert.equal(await configureReplies(ctx.file, prompts, ctx.env), true);
+  const access = await accessReplies(ctx.file, ctx.env);
+  assert.deepEqual(channelAccess(access, 'telegram').policy.users, ['111', '222']);
+  assert.deepEqual(channelAccess(access, 'feishu').policy.users, [USER, 'ou_OTHER']);
+  assert.ok(prompts.output.some(text => text.includes('111, 222')));
+  assert.ok(prompts.output.some(text => text.includes('当前远程回复渠道：Feishu')));
+  assert.doesNotMatch(prompts.output.join('\n'), /飞书按钮会跳转到 Telegram|不直接接收飞书消息/);
+});
+test('分隔符兼容不扩大授权，空名单及非法ID仍拒绝且保留旧授权', async t => {
+  const ctx = await fixture(t);
+  for (const input of ['，、 ;；', '111、999', '111、ou_OTHER']) {
+    await assert.rejects(configureReplies(ctx.file, ui(['3', input]), ctx.env));
+    assert.equal((await accessReplies(ctx.file, ctx.env)).identity, ctx.access.identity);
+  }
 });
 test('旧版单渠道授权不因两渠道均已配置而自动扩权', async t => {
   const ctx = await fixture(t);
@@ -90,7 +157,7 @@ test('双渠道策略严格拒绝未知渠道、跨命名空间用户和非布�
 });
 test('双渠道配置取消不覆盖旧授权，跨渠道用户 ID 不能混用', async t => {
   const ctx = await fixture(t);
-  assert.equal(await configureReplies(ctx.file, ui(['3', '111', 'n', '', 'y']), ctx.env), false);
+  assert.equal(await configureReplies(ctx.file, ui(['3', '111', 'n', '']), ctx.env), false);
   assert.equal((await accessReplies(ctx.file, ctx.env)).identity, ctx.access.identity);
   await assert.rejects(configureReplies(ctx.file, ui(['3', USER]), ctx.env));
   assert.equal((await accessReplies(ctx.file, ctx.env)).identity, ctx.access.identity);

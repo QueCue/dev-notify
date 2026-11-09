@@ -232,17 +232,16 @@ export async function configureReplies(file: string, prompts: Prompts, env: Env 
     if (!available.length) throw new ConfigError(t('reply.setupPrivateOnly'));
     prompts.out(t('feishu.channelStatus', { channel: channel === 'telegram' ? 'Telegram' : 'Feishu' }));
     prompts.out(t(channel === 'feishu' ? 'feishu.setupNotice' : 'reply.setupNoticeBridge'));
-    prompts.out(t('reply.setupAvailable', { users: joinList(available) }));
-    const text = await prompts.text(t('reply.setupPrompt'));
+    prompts.out(t('reply.setupAvailable', { users: available.join(', ') }));
+    const text = await prompts.text(t(channel === 'feishu' ? 'reply.setupFeishuPrompt' : 'reply.setupTelegramPrompt'));
     if (!text.trim()) return false;
-    const users = [...new Set(text.split(',').map(id => id.trim()))];
-    if (users.some(id => !available.includes(id))) throw new ConfigError(t('reply.setupInvalidUser'));
+    const users = [...new Set(text.split(/[,，、;；\s]+/u).filter(Boolean))];
+    if (!users.length || users.some(id => !available.includes(id))) throw new ConfigError(t('reply.setupInvalidUser'));
     prompts.out(t('reply.setupAuthorizing', { users: joinList(users) }));
     prompts.out(t('reply.setupSensitive'));
     const permissions = /^(y|yes)$/i.test(await prompts.text(t('reply.setupPermissionsPrompt')));
     grants[channel] = { bot: botKey(config, channel), users, permissions };
   }
-  if (!/^(y|yes)$/i.test(await prompts.text(t('reply.setupConfirm')))) return false;
   await locked(policyPath(file) + '.lock', async () => {
     if (JSON.stringify(before) !== JSON.stringify(await readJson(policyPath(file)))) throw new ConfigError(t('reply.setupChanged'));
     const effective = await loadConfig(file, true, env);

@@ -107,7 +107,7 @@ dev-notify reply start
 dev-notify reply status
 ```
 
-When Telegram and a Feishu app are both available, `reply setup` offers **1) Telegram, 2) Feishu, 3) Both**. Choose `3` to authorize private-chat users and tool-permission capability separately for each channel, followed by one final confirmation. Dual-channel replies require **0.4.0 or later**; upgrade first if option `3` is absent.
+When Telegram and a Feishu app are both available, `reply setup` offers **1) Telegram, 2) Feishu, 3) Both**. Choose `3` to authorize private-chat users and tool-permission capability separately for each channel. Once all selected channels are completed, authorization is saved without an additional summary confirmation. Tool permissions still default to `N`; a blank user list cancels, and incomplete setup never saves partial grants. Dual-channel replies require **0.4.0 or later**; upgrade first if option `3` is absent.
 
 Authorize only trusted users in the current notification list: Telegram private-chat chat IDs or Feishu app user `open_id` values. Grants are channel-specific; notification recipients, group members, and card viewers do not automatically gain input rights. Tool-permission capability is not inherited across channels. Existing single-channel grants remain valid and are not broadened automatically by upgrading.
 
