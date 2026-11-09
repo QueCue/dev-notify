@@ -41,7 +41,7 @@ export interface Interaction {
   call?: string; result?: InteractionResult; receipts?: InteractionReceipt[];
   messages?: { chat: string; message: MessageId; cleared?: boolean; registered?: boolean }[];
   displayed?: Record<string, number>;
-  notified?: { telegram?: string[]; feishu?: string };
+  notified?: { telegram?: string[]; feishu?: string; feishuUsers?: string[] };
 }
 export interface ReplyState {
   version: 1; identity: string; offset: number; sessions: Record<string, SessionTarget>;

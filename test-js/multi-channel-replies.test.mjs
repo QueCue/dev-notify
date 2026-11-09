@@ -10,7 +10,7 @@ import { replyApi } from '../dist/reply-api.js';
 import { feishuReplyApi, enqueueFeishuMessage } from '../dist/reply-feishu.js';
 import { processUpdate, drainFeishuInbox, drainReplies } from '../dist/reply-engine.js';
 import { createInteraction, showInteraction, waitInteraction } from '../dist/reply-interactions.js';
-import { drainInteractionFeedback, finishInteraction } from '../dist/reply-outcomes.js';
+import { callKey, registerToolCall, drainInteractionFeedback, finishInteraction } from '../dist/reply-outcomes.js';
 import { dispatchClaudeHook } from '../dist/claude-hook.js';
 import { lifecycleHook, interactionHook } from '../dist/reply-hooks.js';
 import { runBridge, bridgeStatus } from '../dist/reply-bridge.js';
@@ -64,6 +64,21 @@ const fsMessage = (id, text, parent = 'om_notice') => ({ event_id: 'evt_' + id, 
   message: { message_id: id, chat_id: 'oc_private', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text }), create_time: String(Date.now()), parent_id: parent } });
 async function receiveFs(ctx, message) { await enqueueFeishuMessage(ctx.fs, message); await drainFeishuInbox(ctx.fs, ctx.context(ctx.fs)); }
 
+for (const delivered of ['telegram', 'feishu', 'both'])
+test(`双渠道通用提醒只对已送达题目的渠道与接收人去重：${delivered}`, async t => {
+  const ctx = await fixture(t);
+  await registerToolCall(ctx.access, TARGET, { tool_use_id: 'question-call', tool_name: 'AskUserQuestion', tool_input: { questions: [QUESTION] } });
+  const request = await createInteraction(ctx.access, TARGET, 'question', { questions: [QUESTION] }, callKey(TARGET.session, 'question-call'));
+  if (delivered !== 'feishu') await showInteraction(ctx.tg, request.id, '111', ctx.api);
+  if (delivered !== 'telegram') await showInteraction(ctx.fs, request.id, USER, ctx.api);
+  const plans = [];
+  await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Notification', notification_type: 'permission_prompt', session_id: TARGET.session })), ctx.file, {
+    env: ctx.env, err() {}, reply: { session: async () => TARGET },
+    send: async plan => { plans.push(plan); return { ok: true, channel: plan.channel, sent: plan.items.length, planned: plan.items.length }; },
+  });
+  assert.deepEqual(plans.filter(plan => plan.channel === 'telegram').flatMap(plan => plan.items.map(item => item.recipient)), delivered === 'feishu' ? ['111', '222'] : ['222']);
+  assert.deepEqual(plans.filter(plan => plan.channel === 'feishu').flatMap(plan => plan.items.map(item => item.recipient)), delivered === 'telegram' ? [USER, 'ou_OTHER'] : ['ou_OTHER']);
+});
 test('reply setup 逐渠道询问工具权限，答完直接保存不再汇总确认', async t => {
   const ctx = await fixture(t), prompts = ui(['3', '111', 'n', USER, 'y']);
   assert.equal(await configureReplies(ctx.file, prompts, ctx.env), true);

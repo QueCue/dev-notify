@@ -70,7 +70,7 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
       return null;
     }
     if (!target) {
-      if (previous) { previous.unverified = true; previous.updated = Date.now(); }
+      if (previous) { previous.unverified = true; previous.updated = Math.max(Date.now(), previous.updated + 1); }
       // 观察到新的本地输入时仍取消旧排队任务，不能在恢复核验后抢先注入。
       if (event === 'UserPromptSubmit' || event === 'SessionStart') {
         if (state.pending[data.session_id]?.phase === 'queued') delete state.pending[data.session_id];
@@ -118,15 +118,17 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
   }
 }
 const feishuTarget = (config: Config) => digest(JSON.stringify([config.feishu.webhook, config.feishu.secret]));
-export async function notificationCoverage(data: any, file: string, config: Config, options: ReplyHookOptions = {}): Promise<{ telegram: string[]; feishu: boolean }> {
+export async function notificationCoverage(data: any, file: string, config: Config, options: ReplyHookOptions = {}): Promise<{ telegram: string[]; feishu: boolean; feishuUsers?: string[] }> {
   const none = { telegram: [] as string[], feishu: false };
   if (data.hook_event_name !== 'Notification' || data.notification_type !== 'permission_prompt' || typeof data.session_id !== 'string') return none;
   const access = await accessFor(file, options);
-  if (!access || replyChannel(access) === 'feishu' || botKey(config) !== access.policy.bot) return none;
+  if (!access) return none;
+  const telegram = channelAccess(access, 'telegram'), feishu = channelAccess(access, 'feishu');
   return stateTransaction(access, state => {
     const target = state.sessions[data.session_id];
     const call = target?.latestCall && state.calls[target.latestCall];
-    if (!target || target.unverified === true || !call || call.session !== target.session || call.epoch !== targetEpoch(target) || call.tool !== 'AskUserQuestion'
+    // 去重只证明同一题目已送达，不批准答案；临时核验暂停不应额外发一条不可回答的提醒。
+    if (!target || !call || call.session !== target.session || call.epoch !== targetEpoch(target) || call.tool !== 'AskUserQuestion'
       || typeof data.tool_use_id === 'string' && data.tool_use_id !== call.id
       || typeof data.tool_name === 'string' && data.tool_name !== call.tool
       || typeof data.prompt_id === 'string' && data.prompt_id !== call.prompt) return none;
@@ -134,8 +136,14 @@ export async function notificationCoverage(data: any, file: string, config: Conf
     if (!request || request.kind !== 'question' || request.session !== target.session || request.epoch !== call.epoch || request.expires <= Date.now()) return none;
     // Notification 通常没有调用 ID；仅覆盖当前最后一项调用，存在其他并行调用时保守保留提醒。
     if (Object.entries(state.calls).some(([key, other]) => key !== target.latestCall && other.session === target.session && other.epoch === call.epoch && !other.ended)) return none;
-    return { telegram: (request.notified?.telegram ?? []).filter(user => access.policy.users.includes(user)),
-      feishu: request.notified?.feishu === feishuTarget(config) };
+    return {
+      telegram: telegram && botKey(config, 'telegram') === telegram.policy.bot
+        ? (request.notified?.telegram ?? []).filter(user => telegram.policy.users.includes(user)) : [],
+      feishu: config.feishu.mode !== 'app' && !!telegram && botKey(config, 'telegram') === telegram.policy.bot
+        && request.notified?.feishu === feishuTarget(config),
+      ...(config.feishu.mode === 'app' ? { feishuUsers: feishu && botKey(config, 'feishu') === feishu.policy.bot
+        ? (request.notified?.feishuUsers ?? []).filter(user => feishu.policy.users.includes(user) && config.feishu.openIds?.includes(user)) : [] } : {}),
+    };
   });
 }
 export async function attachReply(message: Message, data: any, file: string, options: ReplyHookOptions = {}): Promise<{ access: ReplyAccess; token: string } | null> {
@@ -266,7 +274,12 @@ export async function interactionHook(data: any, file: string, options: ReplyHoo
   const kind = data.tool_name === 'AskUserQuestion' ? 'question' : replyAccesses(access).some(view => view.policy.permissions === true) ? 'permission' : null;
   if (typeof data.session_id !== 'string' || data.hook_event_name === 'PermissionRequest' && !kind) return;
   const cached = data.hook_event_name === 'PreToolUse'
-    ? await stateTransaction(access, state => state.sessions[data.session_id]) : null;
+    ? await stateTransaction(access, state => {
+      const previous = state.sessions[data.session_id];
+      // 已观察到新工具：即使当前无法核验并登记调用，也不能让旧题吞掉新工具的权限提醒。
+      if (previous) delete previous.latestCall;
+      return previous;
+    }) : null;
   // 登记阶段复用生命周期元数据；真正开启远程交互时仍重新核验进程身份。
   const target = cached ?? await getTarget(data, options);
   if (!target || target.unverified === true) { options.err?.(t('reply.noSession')); return; }

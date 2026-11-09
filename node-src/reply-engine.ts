@@ -20,13 +20,50 @@ function privateUser(message: any, sender: any): string | null {
     || !Number.isSafeInteger(sender?.id) || sender.id !== chat.id || sender.is_bot === true) return null;
   return String(chat.id);
 }
-export async function resolveEntry(access: ReplyAccess, key: string, context: EngineContext): Promise<{ entry: Entry; target: SessionTarget } | null> {
-  const resolved = await stateTransaction(access, state => {
+export type ReplyResolutionFailure = 'mapping-missing' | 'session-missing' | 'session-changed' | 'mapping-expired' | 'input-unobserved' | 'verification-paused' | 'interaction-ended';
+export async function resolveEntry(access: ReplyAccess, key: string, context: EngineContext,
+  onFailure?: (reason: ReplyResolutionFailure) => void): Promise<{ entry: Entry; target: SessionTarget } | null> {
+  const fail = (reason: ReplyResolutionFailure) => { onFailure?.(reason); return null; };
+  const resolved = await stateTransaction<{ reason: ReplyResolutionFailure } | { entry: Entry; target: SessionTarget }>(access, state => {
     const entry = state.entries[key], target = entry && state.sessions[entry.session];
-    return entry && target && target.unverified !== true && (target.tracked === true || !!entry.request) && entry.epoch === sessionEpoch(target) && Date.now() - entry.updated < TTL ? { entry, target } : null;
+    if (!entry) return { reason: 'mapping-missing' as const };
+    if (!target) return { reason: 'session-missing' as const };
+    if (entry.epoch !== sessionEpoch(target)) return { reason: 'session-changed' as const };
+    if (Date.now() - entry.updated >= TTL) return { reason: 'mapping-expired' as const };
+    if (!target.tracked && !entry.request) return { reason: 'input-unobserved' as const };
+    const request = entry.request && state.requests[entry.request];
+    // 只有仍在等待的原始结构化请求可以请求重新核验；普通终端输入维持原来的暂停规则。
+    const recoverable = !!request && request.session === entry.session && request.epoch === entry.epoch
+      && !request.result && !request.response && !request.claimed && request.expires > Date.now()
+      && (!request.call || state.calls[request.call]?.request === request.id && !state.calls[request.call]?.ended);
+    if (target.unverified && !recoverable) return { reason: entry.request ? 'interaction-ended' as const : 'verification-paused' as const };
+    return { entry, target };
   });
-  if (!resolved || !await (context.validate ?? (target => validateTarget(target)))(resolved.target)) return null;
-  return resolved;
+  if ('reason' in resolved) return fail(resolved.reason);
+  const recovering = resolved.target.unverified === true;
+  // 仅清除用于阻止旧状态的标记后执行真实查询；仍须核对 session/PID/birth/TTY，不把旧快照当作证明。
+  const candidate = recovering ? { ...resolved.target, unverified: false } : resolved.target;
+  try {
+    if (!await (context.validate ?? (target => validateTarget(target)))(candidate)) return fail('session-changed');
+  } catch (error) {
+    if (error instanceof SessionLookupError) return fail('verification-paused');
+    throw error;
+  }
+  const current = await context.fresh();
+  if (!current || current.identity !== access.identity) return fail('session-changed');
+  if (!recovering) return resolved;
+  return stateTransaction(current, state => {
+    const entry = state.entries[key], target = state.sessions[resolved.target.session];
+    const request = entry?.request && state.requests[entry.request];
+    if (!entry || !target || entry.request !== resolved.entry.request || entry.epoch !== resolved.entry.epoch
+      || sessionEpoch(target) !== resolved.entry.epoch) return fail('session-changed');
+    if (!request || request.result || request.response || request.claimed || request.expires <= Date.now()
+      || request.call && (state.calls[request.call]?.request !== request.id || state.calls[request.call]?.ended)) return fail('interaction-ended');
+    // 查询期间其他 hook 又更新了会话时，不覆盖较新的核验决定。
+    if (target.updated !== resolved.target.updated) return fail('verification-paused');
+    delete target.unverified;
+    return { entry, target };
+  });
 }
 // autoReply：Telegram 内联按钮沿用 force_reply，点击后自动进入回复状态。
 // 飞书跳转使用普通提示 + remove_keyboard：清除客户端缓存的旧强制回复目标，但不拉起新的回复框。
@@ -105,8 +142,14 @@ async function processMessage(access: ReplyAccess, message: any, chat: string, c
   if (!validMessageId(replyTo)) {
     await replyHint(context.api, chat, t('reply.howToTitle'), t(replyChannel(access) === 'feishu' ? 'feishu.replyHint' : 'reply.howToBody'), message.message_id); return;
   }
-  const resolved = await resolveEntry(access, messageKey(access, chat, replyTo), context);
-  if (!resolved) { await replyHint(context.api, chat, t('reply.sessionGoneTitle'), t('reply.expiredReplyBody'), message.message_id); return; }
+  const failure: { reason: ReplyResolutionFailure } = { reason: 'session-changed' };
+  const resolved = await resolveEntry(access, messageKey(access, chat, replyTo), context, reason => { failure.reason = reason; });
+  if (!resolved) {
+    const detail = failure.reason === 'mapping-missing' ? 'reply.mappingMissingBody'
+      : failure.reason === 'verification-paused' || failure.reason === 'input-unobserved' ? 'reply.verificationPausedBody'
+      : failure.reason === 'interaction-ended' ? 'reply.interactionExpiredBody' : 'reply.expiredReplyBody';
+    await replyHint(context.api, chat, t('reply.sessionGoneTitle'), t(detail), message.message_id); return;
+  }
   if (resolved.entry.request) { await handleInteractionText(access, resolved.entry.request, chat, message, context.api); return; }
   let safe;
   try { safe = sanitizeReply(message.text); }

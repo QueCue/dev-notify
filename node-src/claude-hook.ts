@@ -177,7 +177,7 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
     }
     if (bindings.telegram || bindings.feishu) diagnostic.reply = 'attached';
     const feishuBinding = bindings.feishu ?? (bindings.telegram && !channelAccess(bindings.telegram.access, 'feishu') ? bindings.telegram : null);
-    let covered = { telegram: [] as string[], feishu: false };
+    let covered: Awaited<ReturnType<typeof notificationCoverage>> = { telegram: [], feishu: false };
     try { covered = await notificationCoverage(data, configFile, config, options); }
     catch { context.err(t('hook.coverageFailed')); }
     for (const channel of ['telegram', 'feishu'] as Channel[]) {
@@ -186,11 +186,16 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
       let trace: DeliveryTrace | undefined;
       try {
         if (channel === 'feishu' && covered.feishu) continue;
+        const channelMessage = channel === 'feishu' && config.feishu.mode === 'app'
+          && data.hook_event_name === 'Notification' && data.notification_type === 'permission_prompt'
+          ? { ...notification, title: t('hook.permissionReminderTitle'),
+            content: `${notification.content}\n\n${t('hook.permissionReminderHint')}` } : notification;
         const plan = channel === 'feishu' && config.feishu.mode === 'app' && data.hook_event_name === 'Stop'
-          ? feishuCompletionPlan(notification, config, feishuBinding, reasons.feishu ?? diagnostic.reply)
-          : makePlan(channel, notification, config);
-        if (channel === 'telegram' && covered.telegram.length) {
-          plan.items = plan.items.filter(item => !covered.telegram.includes(item.recipient));
+          ? feishuCompletionPlan(channelMessage, config, feishuBinding, reasons.feishu ?? diagnostic.reply)
+          : makePlan(channel, channelMessage, config);
+        const coveredUsers = channel === 'telegram' ? covered.telegram : covered.feishuUsers ?? [];
+        if (coveredUsers.length) {
+          plan.items = plan.items.filter(item => !coveredUsers.includes(item.recipient));
           plan.recipients = new Set(plan.items.map(item => item.recipient)).size;
           if (!plan.items.length) continue;
         }

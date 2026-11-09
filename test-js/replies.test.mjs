@@ -130,6 +130,17 @@ test('未授权远端批准权限时仍登记后续其他工具，不能用旧�
     { env: ctx.env, session: async () => TARGET, api: () => assert.fail('不能联网'), bridge: async () => assert.fail('不能启动桥接') });
   assert.deepEqual(recipients(await dispatchNotice(ctx)), ['111', '222', '-333']);
 });
+test('核验暂停后即使无法登记新工具，旧题也不能吞掉新工具的权限提醒', async t => {
+  const ctx = await temp(t), { request } = await boundQuestion(ctx);
+  await showInteraction(ctx.access, request.id, '111', ctx.api);
+  await lifecycleHook(permissionNotice(), ctx.file, { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  await interactionHook({ hook_event_name: 'PreToolUse', session_id: TARGET.session, tool_use_id: 'paused-bash', tool_name: 'Bash', tool_input: { command: 'pwd' } }, ctx.file,
+    { env: ctx.env, api: () => assert.fail('不能联网'), bridge: async () => assert.fail('不能启动桥接') });
+  const state = await snapshot(ctx.access);
+  assert.equal(state.sessions[TARGET.session].latestCall, undefined);
+  assert.equal(Object.values(state.calls).some(call => call.id === 'paused-bash'), false);
+  assert.deepEqual(recipients(await dispatchNotice(ctx, {}, null)), ['111', '222', '-333']);
+});
 test('存在另一个并行调用时不猜测提醒归属，保留全部提醒', async t => {
   const ctx = await temp(t);
   await registerToolCall(ctx.access, TARGET, { tool_use_id: 'parallel', tool_name: 'Bash', tool_input: { command: 'pwd' } });
@@ -579,7 +590,7 @@ test('暂停核验时不能登记新交互或使用旧按钮批准权限', async
   const ctx = await temp(t), { request } = await boundQuestion(ctx);
   await lifecycleHook({ hook_event_name: 'Notification', session_id: TARGET.session }, ctx.file,
     { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
-  await processUpdate(ctx.access, callback(1, request.id, 0, 'o0'), ctx.context);
+  await processUpdate(ctx.access, callback(1, request.id, 0, 'o0'), { ...ctx.context, validate: async () => { throw new SessionLookupError(); } });
   assert.equal((await snapshot(ctx.access)).requests[request.id].response, undefined);
   await assert.rejects(createInteraction(ctx.access, TARGET, 'permission', { tool_name: 'Bash' }), /会话|目标/);
   await assert.rejects(registerToolCall(ctx.access, TARGET, { tool_use_id: 'new', tool_name: 'Bash', tool_input: { command: 'FAKE' } }), /核验会话/);

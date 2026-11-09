@@ -19,7 +19,7 @@ import { postUpdate } from './maintenance.js';
 import { joinList, localeName, parseLocale, resolveLocale, setLocale, t, type Locale } from './i18n.js';
 import { safeDeliveryReason } from './notification-diagnostics.js';
 
-export const VERSION = '0.4.1';
+export const VERSION = '0.4.2';
 const helpText = () => t('cli.help', { version: VERSION });
 function rawLang(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {

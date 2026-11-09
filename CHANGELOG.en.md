@@ -6,6 +6,14 @@ English | [简体中文](CHANGELOG.md)
 
 No changes yet.
 
+## 0.4.2 — 2026-11-09
+
+- Fix structured questions remaining paused after a single failed session lookup in a post-question Notification. Quoting the original question revalidates session/PID/birth identifier/TTY only for a still-active, unsubmitted request. Persistent failures, newer pause decisions, identity changes, revocation, or ended requests remain blocked; ordinary terminal input is not unpaused by this path.
+- Distinguish missing quoted-message mappings, paused identity verification, and invalid sessions instead of describing every temporary lookup failure as expiry. Missing mappings never cause guessed or cross-session routing.
+- Suppress duplicate general permission reminders per channel and recipient only after a Feishu app AskUserQuestion is fully delivered and durably mapped. Sending, failed or partial delivery, unauthorized recipients, and other calls retain fallback reminders. Feishu app fallbacks have an explicit general-reminder title and say they cannot accept quoted answers. Asynchronous reminders arriving first can still produce two messages; no cross-process exactly-once guarantee is claimed.
+- Stabilize dead-process bridge fixtures by selecting a valid high PID confirmed absent with a read-only ESRCH probe, avoiding reuse of an exited child's PID during parallel tests. Retain the independent real child-exit/lock-recovery test and leave runtime lock-ownership rules unchanged.
+- Full offline Windows / Node 24.12.0 regression: 501 tests, 500 passed, 0 failed, and 1 explicit native-credential test skipped. New tests cover pause recovery, simulated Mac process identity and foreground groups, request/authorization races, delivery-failure fallbacks, and dual-channel per-recipient deduplication. Real macOS/Feishu retesting remains pending; npm registry is authoritative for release status.
+
 ## 0.4.1 — 2026-11-09
 
 - Fix `reply setup` rejecting copied Chinese list separators: accept ASCII/Chinese commas, Chinese enumeration commas, whitespace, and semicolons, deduplicate, then strictly validate against each channel's recipients. Display available IDs with ASCII commas for direct copying.

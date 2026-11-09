@@ -95,6 +95,11 @@ export async function showInteraction(access: ReplyAccess, id: string, chat: str
     if (!claimed) return;
   }
   if (replyChannel(access) === 'feishu') {
+    // 发送中或失败时保留该接收人的通用提醒，不能把发送登记当作送达证明。
+    await stateTransaction(access, state => {
+      const current = state.requests[id];
+      if (current?.notified?.feishuUsers) current.notified.feishuUsers = current.notified.feishuUsers.filter(user => user !== chat);
+    });
     const sent = await replyHint(api, chat, t('hook.notificationTitle'), interactionContent(value, true));
     const ids = sent?.message_ids ?? [sent?.message_id];
     if (!Array.isArray(ids) || !ids.length || !ids.every(validMessageId)) throw new ConfigError(t('reply.noInteractionMessageId'));
@@ -106,6 +111,8 @@ export async function showInteraction(access: ReplyAccess, id: string, chat: str
         (current.messages ??= []).push({ chat, message });
       }
       (current.displayed ??= {})[`${replyChannel(access)}:${chat}`] = value.index;
+      const users = (current.notified ??= {}).feishuUsers ??= [];
+      if (!users.includes(chat)) users.push(chat);
     });
     return;
   }

@@ -134,6 +134,8 @@ Remote input can contain Claude commands and grants real control; it is not read
 - Supports actual single-select and multi-select questions and custom answers for each question. The local interface remains usable.
 - In Feishu, quote the corresponding **question message**: enter one option number for single-select (for example, `2`), comma-separated numbers for multi-select (for example, `1,3`), or custom text as prompted.
 - After separately enabling tool permission approval, Telegram offers Allow this time, Deny, or a custom denial reason. In Feishu, quote the corresponding **permission message** and enter `/allow` to allow once, `/deny` to deny, or `/close` to close remote handling and return control to the local UI. Other text is only a denial reason, never an approval. No permanent approval rules are created.
+- A general permission reminder cannot accept quoted answers. Reply to the interaction message containing the complete question/options or permission commands. Complete question delivery suppresses duplicate reminders per recipient; an asynchronous reminder arriving first can still produce two messages.
+- Verification paused does not mean the question expired. Once the local session recovers, quote the original question again before expiry to rerun verification; previously failed answers are not submitted automatically.
 - Timeouts, revoked authorization, or unverifiable targets never select or approve by default. Old buttons and quoted messages cannot answer new questions.
 - Answers are first reported as registered, then as applied, not applied, or unknown based on Claude's actual result.
 - Unsupported interactions such as MCP forms and URLs must be handled locally.

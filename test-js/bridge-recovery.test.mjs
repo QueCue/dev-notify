@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { acquireBotLock, processState } from '../dist/reply-lock.js';
@@ -17,7 +17,10 @@ import { TelegramConnectionResetError, TelegramRequestError } from '../dist/noti
 
 globalThis.fetch = async () => assert.fail('测试禁止真实网络');
 const OWNER = 'a'.repeat(32), OLD = 'b'.repeat(32);
-const departed = spawnSync(process.execPath, ['-e', ''], { timeout: 10000 }).pid;
+// 已退出子进程的低位 PID 可能在并行回归中被复用；仅使用本机确认 ESRCH 的合法高位 PID。
+// 下方真实子进程强杀回归独立保留，不用此夹具代替真实退出验收。
+const departed = [2_147_483_647, 2_147_483_646, 2_147_483_645].find(pid => processState(pid) === 'dead');
+assert.ok(departed, '测试夹具必须先确认不存在的合法 PID，不能把权限未知当作死亡');
 async function temp(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'dev-notify-bridge-recovery-'));
   t.after(() => rm(root, { recursive: true, force: true }));

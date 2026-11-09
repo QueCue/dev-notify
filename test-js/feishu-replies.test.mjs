@@ -18,6 +18,8 @@ import { deliverFeishuPlan, makePlan } from '../dist/channels.js';
 import { dispatchClaudeHook } from '../dist/claude-hook.js';
 import { getLocale, setLocale } from '../dist/i18n.js';
 import { refreshFeishuReplyCards } from '../dist/feishu-card-status.js';
+import { SessionLookupError, validateTarget } from '../dist/reply-platform.js';
+import { callKey, registerToolCall } from '../dist/reply-outcomes.js';
 
 globalThis.fetch = async () => { throw new Error('禁止真实网络'); };
 const USER = 'ou_FAKE_USER', OTHER = 'ou_OTHER_USER';
@@ -441,6 +443,187 @@ test('未知输入结果及 HTTP 结果都不自动重试，状态正文不保�
   const api = feishuReplyApi(ctx.config, { ...ctx.client, sendMessage: async () => { sends++; throw new Error('FAKE_SECRET'); } });
   await assert.rejects(api('sendMessage', { chat_id: USER, text: '测试' }), error => !error.message.includes('FAKE_SECRET'));
   assert.equal(sends, 1);
+});
+async function boundFeishuQuestion(ctx, questions = [QUESTION]) {
+  await registerToolCall(ctx.access, TARGET, { tool_use_id: 'feishu-question-call', tool_name: 'AskUserQuestion', tool_input: { questions } });
+  return createInteraction(ctx.access, TARGET, 'question', { questions }, callKey(TARGET.session, 'feishu-question-call'));
+}
+async function dispatchPermissionReminder(ctx, extra = {}, reply = {}) {
+  const plans = [];
+  await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Notification', notification_type: 'permission_prompt',
+    session_id: TARGET.session, message: 'Claude needs your permission', ...extra })), ctx.file, {
+    env: ctx.env, err() {}, reply: { session: async () => TARGET, ...reply },
+    send: async plan => { plans.push(plan); return { ok: true, channel: plan.channel, sent: plan.items.length, planned: plan.items.length }; },
+  });
+  return plans;
+}
+const feishuRecipients = plans => plans.filter(plan => plan.channel === 'feishu').flatMap(plan => plan.items.map(item => item.recipient));
+test('飞书已投递题目按接收人去重通用提醒，未授权接收人仍收到明确不可回答的兜底', async t => {
+  const ctx = await fixture(t, { ...RAW, feishu: { ...RAW.feishu, open_ids: [USER, OTHER] } });
+  const request = await boundFeishuQuestion(ctx);
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  const plans = await dispatchPermissionReminder(ctx);
+  assert.deepEqual(feishuRecipients(plans), [OTHER]);
+  assert.match(plans[0].items[0].payload.card.header.title.content, /通用权限提醒/);
+  assert.match(JSON.stringify(plans[0].items[0].payload.card), /不能引用作答/);
+  assert.deepEqual((await snapshot(ctx.access)).requests[request.id].notified.feishuUsers, [USER]);
+});
+test('飞书题目送达后临时核验暂停也不重复发送通用提醒，但不能因此执行答案', async t => {
+  const ctx = await fixture(t), request = await boundFeishuQuestion(ctx);
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  assert.deepEqual(await dispatchPermissionReminder(ctx, {}, { sessionLookup: async () => ({ status: 'unavailable' }) }), []);
+  assert.equal((await snapshot(ctx.access)).sessions[TARGET.session].unverified, true);
+  ctx.context.validate = async () => { throw new SessionLookupError(); };
+  await receive(ctx, event('om_paused_question', '1', 'om_sent_1'));
+  assert.equal((await snapshot(ctx.access)).requests[request.id].response, undefined);
+});
+for (const scenario of ['missing', 'send-failed', 'mapping-failed', 'partial', 'retry-failed', 'expired', 'different-call', 'parallel', 'disabled'])
+test(`飞书不能用未投递或其他题目吞掉通用权限提醒：${scenario}`, async t => {
+  const ctx = await fixture(t);
+  const questions = scenario === 'partial' ? [{ ...QUESTION, question: '长题'.repeat(3000) }] : [QUESTION];
+  const request = await boundFeishuQuestion(ctx, questions);
+  if (['expired', 'different-call', 'parallel', 'disabled', 'retry-failed'].includes(scenario)) await showInteraction(ctx.access, request.id, USER, ctx.api);
+  if (scenario === 'send-failed' || scenario === 'retry-failed') await assert.rejects(showInteraction(ctx.access, request.id, USER, async () => { throw new Error('FAKE_ONLY'); }));
+  if (scenario === 'mapping-failed') await assert.rejects(showInteraction(ctx.access, request.id, USER, async () => ({})));
+  if (scenario === 'partial') {
+    let count = 0;
+    const api = feishuReplyApi(ctx.config, { sendMessage: async message => {
+      if (++count > 1) throw new Error('FAKE_ONLY'); return ctx.client.sendMessage(message);
+    } });
+    await assert.rejects(showInteraction(ctx.access, request.id, USER, api));
+    assert.equal(count, 2);
+  }
+  if (scenario === 'expired') await stateTransaction(ctx.access, state => { state.requests[request.id].expires = Date.now() - 1; });
+  if (scenario === 'parallel') await registerToolCall(ctx.access, TARGET, { tool_use_id: 'parallel', tool_name: 'Bash', tool_input: { command: 'pwd' } });
+  if (scenario === 'disabled') await atomicJson(policyPath(ctx.file), { ...ctx.policy, enabled: false });
+  assert.deepEqual(feishuRecipients(await dispatchPermissionReminder(ctx, scenario === 'different-call' ? { tool_use_id: 'different' } : {})), [USER]);
+});
+test('飞书核验暂停期间观察到新工具后清除旧题覆盖，不吞掉新权限提醒', async t => {
+  const ctx = await fixture(t), request = await boundFeishuQuestion(ctx);
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  const paused = { sessionLookup: async () => ({ status: 'unavailable' }) };
+  assert.deepEqual(await dispatchPermissionReminder(ctx, {}, paused), []);
+  await interactionHook({ hook_event_name: 'PreToolUse', session_id: TARGET.session, tool_use_id: 'paused-bash', tool_name: 'Bash', tool_input: { command: 'pwd' } }, ctx.file,
+    { env: ctx.env, api: () => assert.fail('不能联网'), bridge: async () => assert.fail('不能启动桥接') });
+  const state = await snapshot(ctx.access);
+  assert.equal(state.sessions[TARGET.session].latestCall, undefined);
+  assert.equal(Object.values(state.calls).some(call => call.id === 'paused-bash'), false);
+  assert.deepEqual(feishuRecipients(await dispatchPermissionReminder(ctx, {}, paused)), [USER]);
+});
+test('飞书题目发送期间保留兜底，发送与关联均成功后才去重', async t => {
+  const ctx = await fixture(t), request = await boundFeishuQuestion(ctx);
+  await showInteraction(ctx.access, request.id, USER, async (method, payload) => {
+    assert.deepEqual(feishuRecipients(await dispatchPermissionReminder(ctx)), [USER]);
+    return ctx.api(method, payload);
+  });
+  assert.deepEqual(await dispatchPermissionReminder(ctx), []);
+});
+test('完整PermissionRequest链路：无需工具批准权，题目去重后可恢复引用并仅回传官方JSON', async t => {
+  const ctx = await fixture(t);
+  await atomicJson(policyPath(ctx.file), { ...ctx.policy, permissions: false });
+  ctx.access = await accessReplies(ctx.file, ctx.env);
+  const data = { session_id: TARGET.session, tool_use_id: 'full-question', tool_name: 'AskUserQuestion', tool_input: { questions: [QUESTION] } };
+  let response;
+  const options = { env: ctx.env, session: async () => TARGET, bridge: async () => true, api: () => ctx.api,
+    response: value => { response = value; },
+    wait: async (access, request, fresh) => {
+      assert.deepEqual(await dispatchPermissionReminder(ctx, {}, { sessionLookup: async () => ({ status: 'unavailable' }) }), []);
+      const state = await snapshot(ctx.access);
+      const parent = state.requests[request.id].messages.find(message => message.chat === USER).message;
+      assert.equal(state.sessions[TARGET.session].unverified, true);
+      await receive(ctx, event('om_full_answer', '1', parent));
+      return waitInteraction(access, request, fresh, { timeout: 100 });
+    } };
+  await interactionHook({ ...data, hook_event_name: 'PreToolUse' }, ctx.file, options);
+  await interactionHook({ ...data, hook_event_name: 'PermissionRequest' }, ctx.file, options);
+  assert.equal(response?.hookSpecificOutput.hookEventName, 'PermissionRequest');
+  assert.equal(response?.hookSpecificOutput.decision.updatedInput.answers[QUESTION.question], 'React');
+  assert.equal(ctx.inputs.length, 0);
+});
+test('题目发出后Notification临时核验失败，原题在真实核验恢复后可直接作答', async t => {
+  const ctx = await fixture(t);
+  const request = await boundFeishuQuestion(ctx);
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  await lifecycleHook({ hook_event_name: 'Notification', notification_type: 'permission_prompt', session_id: TARGET.session }, ctx.file,
+    { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  assert.equal((await snapshot(ctx.access)).sessions[TARGET.session].unverified, true);
+  let validated = 0;
+  ctx.context.validate = async target => { validated++; assert.notEqual(target.unverified, true); return targetEpoch(target) === targetEpoch(TARGET); };
+  await receive(ctx, event('om_recovered_answer', '1', 'om_sent_1'));
+  const response = await waitInteraction(ctx.access, request, ctx.context.fresh, { timeout: 100 });
+  assert.equal(response?.hookSpecificOutput.decision.updatedInput.answers[QUESTION.question], 'React');
+  assert.equal(validated, 1);
+  assert.equal((await snapshot(ctx.access)).sessions[TARGET.session].unverified, undefined);
+  assert.equal(ctx.inputs.length, 0);
+});
+for (const verification of ['matched', 'background', 'birth', 'tty', 'pid'])
+test(`Mac结构化问答恢复仍核对进程身份与前台组：${verification}`, async t => {
+  const ctx = await fixture(t), target = { ...TARGET, birth: 'Mon Nov 9 14:00:00 2026', tty: '/dev/ttys001' };
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session] = { ...target, updated: Date.now() }; });
+  const request = await createInteraction(ctx.access, target, 'question', { questions: [QUESTION] });
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  await lifecycleHook({ hook_event_name: 'Notification', session_id: TARGET.session }, ctx.file,
+    { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  const pid = verification === 'pid' ? TARGET.pid + 1 : TARGET.pid;
+  ctx.context.validate = value => validateTarget(value, { platform: 'darwin', strict: true,
+    readDirectory: async () => [String(pid) + '.json'],
+    readSessionFile: async () => Buffer.from(JSON.stringify({ sessionId: TARGET.session, pid })),
+    runner: async (command, args) => {
+      assert.equal(command, '/bin/ps');
+      const birth = verification === 'birth' ? 'Mon Nov 9 15:00:00 2026' : target.birth;
+      const tty = verification === 'tty' ? 'ttys002' : 'ttys001';
+      return { code: 0, stdout: args.includes('lstart=') ? `${birth} ${tty} claude` : verification === 'background' ? '12345 99999' : '12345 12345' };
+    } });
+  await receive(ctx, event('om_mac_answer', '2', 'om_sent_1'));
+  const state = await snapshot(ctx.access);
+  assert.equal(state.requests[request.id].answers[QUESTION.question], verification === 'matched' ? 'Vue' : undefined);
+  assert.equal(state.sessions[TARGET.session].unverified, verification === 'matched' ? undefined : true);
+  assert.equal(ctx.inputs.length, 0);
+});
+for (const reason of ['unavailable', 'changed', 'expired', 'closed', 'race', 'newer-verification', 'claimed', 'call-ended', 'revoked'])
+test(`问答恢复不得绕过身份或请求状态：${reason}`, async t => {
+  const ctx = await fixture(t), request = await boundFeishuQuestion(ctx);
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  await lifecycleHook({ hook_event_name: 'Notification', session_id: TARGET.session }, ctx.file,
+    { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  ctx.context.validate = async () => {
+    if (reason === 'unavailable') throw new SessionLookupError();
+    if (reason === 'changed') return false;
+    if (reason === 'race') await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].birth = 'OTHER_PROCESS'; });
+    if (reason === 'newer-verification') await lifecycleHook({ hook_event_name: 'Notification', session_id: TARGET.session }, ctx.file,
+      { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+    if (reason === 'revoked') await atomicJson(policyPath(ctx.file), { ...ctx.policy, enabled: false });
+    return true;
+  };
+  if (reason === 'expired') await stateTransaction(ctx.access, state => { state.requests[request.id].expires = Date.now() - 1; });
+  if (reason === 'closed') await lifecycleHook({ hook_event_name: 'SessionEnd', session_id: TARGET.session }, ctx.file, { env: ctx.env });
+  if (reason === 'claimed') await stateTransaction(ctx.access, state => { state.requests[request.id].claimed = true; });
+  if (reason === 'call-ended') await stateTransaction(ctx.access, state => { state.calls[request.call].ended = true; });
+  await receive(ctx, event('om_blocked_answer', '1', 'om_sent_1'));
+  if (reason === 'revoked') await atomicJson(policyPath(ctx.file), ctx.policy);
+  const state = await snapshot(ctx.access);
+  assert.equal(state.requests[request.id].response, undefined);
+  assert.deepEqual(state.requests[request.id].answers, {});
+  if (['expired', 'claimed', 'call-ended'].includes(reason)) {
+    assert.ok(ctx.sent.some(value => JSON.parse(value.content).text?.includes('交互已经失效')));
+    assert.ok(!ctx.sent.some(value => JSON.parse(value.content).text?.includes('不代表题目已过期')));
+  }
+  assert.equal(ctx.inputs.length, 0);
+});
+test('问答暂停恢复不放开普通终端输入，且错误提示区分关联缺失与核验暂停', async t => {
+  const ctx = await fixture(t), request = await createInteraction(ctx.access, TARGET, 'question', { questions: [QUESTION] });
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  await lifecycleHook({ hook_event_name: 'Notification', session_id: TARGET.session }, ctx.file,
+    { env: ctx.env, sessionLookup: async () => ({ status: 'unavailable' }) });
+  await receive(ctx, event('om_plain_paused', '普通任务', 'om_notice'));
+  assert.equal(ctx.inputs.length, 0);
+  assert.ok(ctx.sent.some(value => JSON.parse(value.content).text?.includes('不代表题目已过期')));
+  await receive(ctx, event('om_unmapped', '1', 'om_unknown_notice'));
+  assert.ok(ctx.sent.some(value => JSON.parse(value.content).text?.includes('会话关联缺失')));
+  assert.equal((await snapshot(ctx.access)).sessions[TARGET.session].unverified, true);
+  ctx.context.validate = async () => true;
+  await receive(ctx, event('om_original_question', '1', 'om_sent_1'));
+  assert.equal((await snapshot(ctx.access)).requests[request.id].answers[QUESTION.question], 'React');
 });
 test('飞书问题按引用逐题回答，支持多选编号和自定义答案，旧题不能重放', async t => {
   const ctx = await fixture(t);
