@@ -9,7 +9,7 @@ Receive task notifications through **Telegram and Feishu**. With Claude Code, re
 - Changes and upgrade notes: [CHANGELOG.en.md](CHANGELOG.en.md)
 - Security and privacy: [SECURITY.en.md](SECURITY.en.md)
 
-General notifications do not require Claude Code. Communication uses the standard npm dependency [`@quecue/notify-core`](https://github.com/QueCue/notify-core) (`^0.2.0`), installed automatically by npm; no separate installation is needed.
+General notifications do not require Claude Code. Communication uses the standard npm dependency [`@quecue/notify-core`](https://github.com/QueCue/notify-core) (`^0.2.1`), installed automatically by npm; no separate installation is needed.
 
 Two-way communication through Feishu self-built apps requires **0.3.0 or later**. Existing Webhook notifications and the Webhook + Telegram reply path remain unchanged.
 
@@ -116,7 +116,10 @@ After reauthorizing or switching reply channels, run `dev-notify reply stop` fol
 - Telegram reply channel: click the reply button on a Telegram completion notification or reply directly to that message.
 - The Webhook + Telegram path remains available: Feishu's "Reply to Claude in Telegram" opens the corresponding bot. Follow the prompt: long-press the message and choose Reply before entering text. The Webhook itself cannot receive replies.
 - Feishu reply channel: in a private chat with the self-built app bot, **quote (reply to) the task completion notification** you want to continue and enter text. Ordinary messages without a quoted notification do not select a session by guesswork; group chats, bots, and non-text messages are rejected.
-- Reply entry points are available only when the bridge is ready and the session identity can be verified. Use a recent notification; older messages do not gain entry points automatically. Feishu uses quoted text replies, not card-action callbacks.
+- Feishu completion cards initially show **🟡 Preparing replies**. Only after the message mapping is saved and the bridge verifies it does the original card change to **🟢 Reply enabled**. Missing authorization, an unready bridge, and similar conditions show **⚪ Reply disabled** with a reason. Receiving a notification does not grant reply permission.
+- Dynamic status requires **0.3.1 or later**: the bridge periodically updates the original card with **🔵 Working · replies queued**, **🟡 Verification paused**, or **⚪ Reply expired / Session closed / Session switched**. Reply mappings last at most 24 hours; the card shows their expiry, but sessions can close or switch earlier. Checks normally run every 10 seconds; batched updates can take longer.
+- Status is not a permanent guarantee: network loss, computer shutdown, bridge exit, or revoked authorization can leave a card stale. Observe the printed expiry; incoming replies are still reverified. Notifications sent before upgrading do not gain dynamic status retroactively.
+- Reply entry points require a ready bridge and a verifiable session identity. Feishu uses quoted text replies, not card-action callbacks.
 - Replies received while Claude is working queue locally and are attempted after completion. The queue is canceled after 5 minutes, new local input, or a target change.
 - A reply is limited to 4000 Unicode characters. Newlines and control characters are cleaned, and text is submitted as one terminal input, not executed as a shell command.
 - "Queued", "Forwarded", and "Claude received" are different states. Receipt is confirmed only after a matching local input event. Failed or unknown-result input is not retried automatically.

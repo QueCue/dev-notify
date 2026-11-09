@@ -31,7 +31,7 @@ npm view @quecue/dev-notify dist-tags versions --json --registry=https://registr
 
 1. 在本仓库执行 `npm ci --ignore-scripts`、`npm test`，并检查变更记录和中英文说明。
 2. 选择未发布的新版本，同步更新 package.json／package-lock、`node-src/cli.ts` 的 `VERSION` 和 CHANGELOG。`0.2.2` 已发布；后续依赖范围调整等变更必须使用新版本，不能覆盖历史版本。
-3. 将源码、运行时依赖范围、registry 锁文件和发布所需脚本纳入同一版本提交。当前通讯依赖范围为 `^0.2.0`，锁文件仍固定已验证的 `0.2.0`。通讯库源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。先确认 `@quecue/notify-core@0.2.0` 已在 npm 可用，再生成并核验锁文件；CI 通过 npm 安装，不读取兄弟仓库或 vendor tarball。
+3. 将源码、运行时依赖范围、registry 锁文件和发布所需脚本纳入同一版本提交。当前通讯依赖范围为 `^0.2.1`，锁文件仍固定已验证的 `0.2.1`。通讯库源码见 [QueCue/notify-core](https://github.com/QueCue/notify-core)。先确认 `@quecue/notify-core@0.2.1` 已在 npm 可用，再生成并核验锁文件；CI 通过 npm 安装，不读取兄弟仓库或 vendor tarball。
 4. 在本地生成并校验候选包：
 
    ```sh

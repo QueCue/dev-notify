@@ -15,6 +15,9 @@ import { attachReply, interactionHook, lifecycleHook, mapReplies } from '../dist
 import { createInteraction, showInteraction, waitInteraction } from '../dist/reply-interactions.js';
 import { bridgeStatus, runBridge, startBridge } from '../dist/reply-bridge.js';
 import { deliverFeishuPlan, makePlan } from '../dist/channels.js';
+import { dispatchClaudeHook } from '../dist/claude-hook.js';
+import { getLocale, setLocale } from '../dist/i18n.js';
+import { refreshFeishuReplyCards } from '../dist/feishu-card-status.js';
 
 globalThis.fetch = async () => { throw new Error('禁止真实网络'); };
 const USER = 'ou_FAKE_USER', OTHER = 'ou_OTHER_USER';
@@ -58,6 +61,213 @@ function event(id = 'om_input', text = '继续', parent = 'om_notice') {
 const snapshot = access => stateTransaction(access, state => structuredClone(state));
 async function receive(ctx, value) { await enqueueFeishuMessage(ctx.access, value); await drainFeishuInbox(ctx.access, ctx.context); }
 
+async function dispatchCompletion(ctx, reply = {}, content = '测试完成正文') {
+  const plans = [], errors = [];
+  await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Stop', session_id: TARGET.session,
+    last_assistant_message: content })), ctx.file, {
+    env: ctx.env, err: text => errors.push(text),
+    reply: { session: async () => TARGET, bridge: async () => true, ...reply },
+    send: async plan => {
+      plans.push(plan);
+      for (let index = 0; index < plan.items.length; index++) await plan.onSent?.(plan.items[index], { result: { message_id: plan.channel === 'telegram' ? 500 + index : 'om_status_' + index } });
+      return { channel: plan.channel, sent: plan.items.length, planned: plan.items.length, ok: true };
+    },
+  });
+  return { plans, errors };
+}
+test('飞书完成卡片顶部按接收人显示可回复，未授权通知接收人明确不可回复', async t => {
+  const ctx = await fixture(t, { ...RAW, feishu: { ...RAW.feishu, open_ids: [USER, OTHER] } });
+  const { plans } = await dispatchCompletion(ctx);
+  assert.equal(plans.length, 1);
+  const enabled = plans[0].items.find(item => item.recipient === USER);
+  const disabled = plans[0].items.find(item => item.recipient === OTHER);
+  assert.match(enabled.payload.card.header.title.content, /^🟡 回复准备中｜/);
+  assert.equal(enabled.payload.card.header.template, 'yellow');
+  assert.equal(disabled.payload.card.header.template, 'grey');
+  assert.match(enabled.payload.card.elements.find(element => element.tag === 'note').elements[0].content, /^正在保存回复关联/);
+  assert.match(disabled.payload.card.header.title.content, /^⚪ 不可回复｜/);
+  assert.match(disabled.payload.card.elements.find(element => element.tag === 'note').elements[0].content, /^此通知接收人未获飞书远程回复授权/);
+  assert.doesNotMatch(JSON.stringify(disabled.payload), /在飞书中引用这条消息回复/);
+  const state = await snapshot(ctx.access);
+  assert.ok(state.entries[messageKey(ctx.access, USER, 'om_status_0')]);
+  assert.equal(state.entries[messageKey(ctx.access, OTHER, 'om_status_1')], undefined);
+});
+for (const scenario of ['disabled', 'bridge', 'unverified', 'unobserved', 'failed'])
+test(`飞书不可回复卡片明确说明原因：${scenario}`, async t => {
+  const ctx = await fixture(t);
+  const options = {};
+  const expected = { disabled: /远程回复尚未启用/, bridge: /回复桥接尚未就绪/,
+    unverified: /当前会话无法可靠核验/, unobserved: /输入/, failed: /回复就绪检查未通过/ };
+  if (scenario === 'disabled') await atomicJson(policyPath(ctx.file), { ...ctx.policy, enabled: false });
+  if (scenario === 'bridge') options.bridge = async () => false;
+  if (scenario === 'unverified') options.session = async () => null;
+  if (scenario === 'unobserved') await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].tracked = false; });
+  if (scenario === 'failed') options.bridge = async () => { throw new Error('FAKE_SECRET'); };
+  const { plans } = await dispatchCompletion(ctx, options);
+  const item = plans[0].items[0];
+  assert.match(item.payload.card.header.title.content, /^⚪ 不可回复｜/);
+  assert.match(item.payload.card.elements.find(element => element.tag === 'note').elements[0].content, expected[scenario]);
+  assert.doesNotMatch(JSON.stringify(item.payload), /FAKE_SECRET|在飞书中引用这条消息回复/);
+  assert.equal(plans[0].onSent, undefined);
+});
+test('回复渠道为 Telegram 时飞书卡片明确指引去 Telegram，不误标可回复', async t => {
+  const ctx = await fixture(t, { ...RAW, telegram: { enabled: true, chat_ids: ['111'] } });
+  ctx.env.TELEGRAM_BOT_TOKEN = '123:FAKE';
+  const config = parseConfig(ctx.raw, ctx.env);
+  await atomicJson(policyPath(ctx.file), { ...ctx.policy, channel: 'telegram', users: ['111'], bot: botKey(config) });
+  const access = await accessReplies(ctx.file, ctx.env);
+  await stateTransaction(access, state => { state.sessions[TARGET.session] = { ...TARGET, updated: Date.now() }; });
+  const { plans } = await dispatchCompletion(ctx, { api: () => async method => {
+    assert.equal(method, 'getMe'); return { username: 'FakeTestBot' };
+  } });
+  const card = plans.find(plan => plan.channel === 'feishu').items[0].payload.card;
+  assert.match(card.header.title.content, /^⚪ 不可回复/);
+  assert.match(card.elements.find(element => element.tag === 'note').elements[0].content, /当前远程回复渠道为 Telegram/);
+  assert.deepEqual((await snapshot(access)).feishuCards ?? {}, {});
+});
+test('飞书长通知每段标题都有回复状态，正文与每段映射保留', async t => {
+  const ctx = await fixture(t);
+  const content = '唯一正文片段😀'.repeat(6000);
+  const { plans } = await dispatchCompletion(ctx, {}, content);
+  assert.ok(plans[0].items.length > 1);
+  assert.ok(plans[0].items.every(item => item.payload.card.header.title.content.startsWith('🟡 回复准备中｜')));
+  const body = plans[0].items.flatMap(item => item.payload.card.elements.filter(element => element.tag === 'markdown').map(element => element.content)).join('');
+  assert.ok(body.includes('唯一正文片段😀'));
+  for (let i = 0; i < plans[0].items.length; i++) assert.ok((await snapshot(ctx.access)).entries[messageKey(ctx.access, USER, 'om_status_' + i)]);
+});
+test('飞书回复状态双语一致，普通等待通知与手动发送不带完成回复状态', async t => {
+  const ctx = await fixture(t), previous = getLocale();
+  try {
+    setLocale('en');
+    const { plans } = await dispatchCompletion(ctx);
+    assert.match(plans[0].items[0].payload.card.header.title.content, /^🟡 Preparing replies/);
+    await atomicJson(policyPath(ctx.file), { ...ctx.policy, enabled: false });
+    const disabled = await dispatchCompletion(ctx);
+    assert.match(disabled.plans[0].items[0].payload.card.header.title.content, /^⚪ Reply disabled/);
+    assert.match(disabled.plans[0].items[0].payload.card.elements.find(element => element.tag === 'note').elements[0].content, /not enabled/);
+  } finally { setLocale(previous); }
+  const notices = [];
+  await dispatchClaudeHook(Buffer.from(JSON.stringify({ hook_event_name: 'Notification', notification_type: 'permission_prompt',
+    session_id: TARGET.session, message: '等待用户处理' })), ctx.file, {
+    env: ctx.env, err() {}, send: async plan => { notices.push(plan); return { channel: plan.channel, ok: true, sent: plan.items.length, planned: plan.items.length }; },
+  });
+  assert.equal(notices.length, 1);
+  assert.doesNotMatch(JSON.stringify(notices[0]), /可回复|不可回复/);
+  const manual = makePlan('feishu', { title: '手动通知', content: '正文', level: 'info', footer: '' }, ctx.config);
+  assert.equal(manual.items[0].payload.card.header.title.content, '手动通知');
+});
+async function refreshCards(ctx, options = {}, update) {
+  const updates = [];
+  await refreshFeishuReplyCards(ctx.access, update ?? (async (id, content) => { updates.push({ id, card: JSON.parse(content) }); }), {
+    fresh: ctx.context.fresh, inspect: async () => ({ status: 'found', target: TARGET }), now: Date.now() + 60000, ...options,
+  });
+  return updates;
+}
+test('保存映射并核验后原卡片才变为可回复，映射缺失不能显示绿色', async t => {
+  const ctx = await fixture(t); await dispatchCompletion(ctx);
+  assert.equal((await snapshot(ctx.access)).feishuCards.om_status_0.status, 'preparing');
+  const enabled = await refreshCards(ctx);
+  assert.match(enabled[0].card.header.title.content, /^🟢 可回复/);
+  assert.equal(enabled[0].card.header.template, 'green');
+  await stateTransaction(ctx.access, state => { delete state.entries[messageKey(ctx.access, USER, 'om_status_0')]; });
+  const paused = await refreshCards(ctx);
+  assert.match(paused[0].card.header.title.content, /^🟡 核验暂停/);
+});
+test('动态卡片在工作中与恢复空闲时更新原消息，不重发正文或输入', async t => {
+  const ctx = await fixture(t);
+  await dispatchCompletion(ctx);
+  const original = (await snapshot(ctx.access)).feishuCards.om_status_0;
+  assert.ok(original); assert.ok(original.expires > Date.now());
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
+  const now = Date.now() + 60000;
+  const working = await refreshCards(ctx, { now });
+  assert.equal(working.length, 1); assert.equal(working[0].id, 'om_status_0');
+  assert.match(working[0].card.header.title.content, /工作中·回复将排队/);
+  assert.match(working[0].card.elements.find(element => element.tag === 'note').elements[0].content, /待本轮结束后/);
+  assert.equal(working[0].card.elements[0].content, original.card.elements[0].content);
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = false; });
+  const ready = await refreshCards(ctx, { now: now + 31000 });
+  assert.match(ready[0].card.header.title.content, /^🟢 可回复/);
+  assert.equal(ctx.inputs.length, 0); assert.equal(ctx.sent.length, 0);
+});
+test('关联超时后原卡片变为已过期，正文保留且不重复更新终态', async t => {
+  const ctx = await fixture(t); await dispatchCompletion(ctx);
+  const value = (await snapshot(ctx.access)).feishuCards.om_status_0;
+  const updates = await refreshCards(ctx, { now: value.expires + 1, inspect: async () => assert.fail('过期不查进程') });
+  assert.match(updates[0].card.header.title.content, /^⚪ 已过期/);
+  assert.match(updates[0].card.elements.find(element => element.tag === 'note').elements[0].content, /回复关联已过期/);
+  assert.equal((await refreshCards(ctx, { now: value.expires + 60000 })).length, 0);
+  assert.equal(ctx.inputs.length, 0);
+});
+for (const scenario of ['hook-close', 'process-exit', 'switch', 'missing-alive', 'lookup-failed'])
+test(`会话状态动态更新且不将核验失败猜成关闭：${scenario}`, async t => {
+  const ctx = await fixture(t); await dispatchCompletion(ctx);
+  const options = {};
+  if (scenario === 'hook-close') await lifecycleHook({ hook_event_name: 'SessionEnd', session_id: TARGET.session }, ctx.file, { env: ctx.env });
+  if (scenario === 'process-exit') { options.inspect = async () => ({ status: 'missing' }); options.process = () => 'dead'; }
+  if (scenario === 'switch') options.inspect = async () => ({ status: 'found', target: { ...TARGET, birth: 'NEW' } });
+  if (scenario === 'missing-alive') { options.inspect = async () => ({ status: 'missing' }); options.process = () => 'alive'; }
+  if (scenario === 'lookup-failed') options.inspect = async () => ({ status: 'unavailable' });
+  const updates = await refreshCards(ctx, options);
+  assert.equal(updates.length, 1);
+  assert.match(updates[0].card.header.title.content, scenario === 'switch' ? /会话已切换/
+    : scenario === 'hook-close' || scenario === 'process-exit' ? /会话已关闭/ : /核验暂停/);
+  assert.equal(ctx.inputs.length, 0);
+});
+test('核验暂停可恢复，保留卡片发送时语言，长消息共享一次会话查询', async t => {
+  const ctx = await fixture(t); const previous = getLocale();
+  try {
+    setLocale('en'); await dispatchCompletion(ctx, {}, '长正文'.repeat(12000));
+    setLocale('zh');
+    const now = Date.now() + 60000; let lookups = 0;
+    const updates = await refreshCards(ctx, { now, inspect: async () => { lookups++; return { status: 'unavailable' }; } });
+    assert.ok(updates.length > 1); assert.equal(lookups, 1);
+    assert.ok(updates.every(value => value.card.header.title.content.startsWith('🟡 Verification paused')));
+    const resumed = await refreshCards(ctx, { now: now + 31000 });
+    assert.ok(resumed.every(value => value.card.header.title.content.startsWith('🟢 Reply enabled')));
+    assert.equal(getLocale(), 'zh');
+  } finally { setLocale(previous); }
+});
+test('状态更新失败不重发正文，失败退避，撤权后不修改旧卡片', async t => {
+  const ctx = await fixture(t); await dispatchCompletion(ctx);
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
+  const now = Date.now() + 60000, logs = []; let attempts = 0;
+  const fail = async () => { attempts++; throw new Error('FAKE_SECRET'); };
+  await refreshCards(ctx, { now, log: text => logs.push(text) }, fail);
+  assert.equal(attempts, 1); assert.doesNotMatch(logs.join(), /FAKE_SECRET/);
+  await refreshCards(ctx, { now: now + 1000 }, fail); assert.equal(attempts, 1);
+  await refreshCards(ctx, { now: now + 31000 });
+  await atomicJson(policyPath(ctx.file), { ...ctx.policy, enabled: false });
+  await refreshCards(ctx, { now: now + 62000 }, async () => assert.fail('撤权后不得更新旧卡片'));
+  assert.equal(ctx.inputs.length, 0); assert.equal(ctx.sent.length, 0);
+});
+test('生命周期同终端切换会话会标记旧卡片失效，不改变新会话', async t => {
+  const ctx = await fixture(t); await dispatchCompletion(ctx);
+  const target = { ...TARGET, session: 'new-session' };
+  await lifecycleHook({ hook_event_name: 'SessionStart', session_id: target.session }, ctx.file, { env: ctx.env, session: async () => target });
+  const value = (await snapshot(ctx.access)).feishuCards.om_status_0;
+  assert.equal(value.invalidated, 'switched');
+  const updates = await refreshCards(ctx, { inspect: async () => assert.fail('明确切换不再猜测进程') });
+  assert.match(updates[0].card.header.title.content, /会话已切换/);
+  assert.ok((await snapshot(ctx.access)).sessions[target.session]);
+});
+test('动态状态每轮更新有界且活动卡片达到上限时不再误标准备就绪', async t => {
+  const ctx = await fixture(t); await dispatchCompletion(ctx);
+  await stateTransaction(ctx.access, state => {
+    const original = state.feishuCards.om_status_0;
+    state.feishuCards = Object.fromEntries(Array.from({ length: 256 }, (_, index) => {
+      const message = 'om_fill_' + index;
+      state.entries[messageKey(ctx.access, USER, message)] = { ...state.entries[messageKey(ctx.access, USER, 'om_status_0')] };
+      return [message, { ...structuredClone(original), message }];
+    }));
+  });
+  const updates = await refreshCards(ctx);
+  assert.equal(updates.length, 8);
+  const { plans } = await dispatchCompletion(ctx);
+  assert.match(plans[0].items[0].payload.card.header.title.content, /^⚪ 不可回复/);
+  assert.equal(plans[0].onSent, undefined);
+  assert.equal(Object.keys((await snapshot(ctx.access)).feishuCards).length, 256);
+});
 test('飞书应用配置：环境变量优先且显式空名单撤销，不读取 Webhook 和明文密钥', () => {
   const config = parseConfig(RAW, { FEISHU_APP_ID: APP, FEISHU_APP_SECRET: 'FAKE', FEISHU_WEBHOOK: 'ignored' });
   assert.equal(ready(config, 'feishu'), true); assert.equal(config.feishu.webhook, '');
@@ -296,6 +506,18 @@ test('切换回复授权后，旧桥接租约不能冒充新渠道 ready 或产�
   assert.equal(await startBridge(ctx.file, ctx.env, { spawn: () => assert.fail('不能启动第二消费者') }), false);
   await atomicJson(lease, { pid: process.pid, owner: 'b'.repeat(32), ready: true, updated: Date.now() });
   assert.equal((await bridgeStatus(ctx.file, ctx.access)).ready, false);
+});
+test('桥接周期检查会调用 core 更新原卡片，不创建新通知', async t => {
+  const ctx = await fixture(t); await dispatchCompletion(ctx);
+  await stateTransaction(ctx.access, state => { state.sessions[TARGET.session].working = true; });
+  const updates = []; let closed = false;
+  const factory = () => ({ state: 'connected', start: async () => {}, stop: () => { closed = true; },
+    sendMessage: async () => assert.fail('不应发送新通知'), replyMessage: async () => assert.fail('不应发送回复'),
+    updateMessage: async (id, content) => { updates.push({ id, content: JSON.parse(content) }); } });
+  await runBridge(ctx.file, { env: ctx.env, feishuFactory: factory, cardInspect: async () => ({ status: 'found', target: TARGET }),
+    maxIterations: 1, sleep: async () => {} });
+  assert.equal(updates.length, 1); assert.equal(updates[0].id, 'om_status_0');
+  assert.match(updates[0].content.header.title.content, /工作中/); assert.equal(closed, true);
 });
 test('飞书桥接连接失败清理资源且不报告 ready，错误不包含凭据', async t => {
   const ctx = await fixture(t); let closed = 0;

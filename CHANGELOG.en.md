@@ -6,6 +6,17 @@ English | [简体中文](CHANGELOG.md)
 
 No changes yet.
 
+## 0.3.1 — 2026-11-09
+
+- Add explicit reply status and unavailability reasons to Feishu app completion-card headers, specific to each recipient's authorization. Every segment retains its indicator; Telegram/Webhook and ordinary manual sends are unchanged.
+- Reply-enabled notifications initially show Preparing replies. Only after durable mapping and bridge reverification is the original card PATCHed to Reply enabled; delivery success alone does not establish mapping success.
+- The bridge periodically updates working (replies queued), verification paused, mapping expired, session closed, and session switched states. Mappings last at most 24 hours and the card prints the expiry. Verification failures never imply closure; a verified matching identity can recover readiness.
+- Update at most 8 cards per pass; reevaluate failures after at least 30 seconds. Only the original message is updated; notifications and input are not resent. Authorization changes stop old-identity updates. Network loss, shutdown, or bridge exit may leave stale status; real-time updates are not guaranteed.
+- Raise the minimum compatible runtime dependency to `@quecue/notify-core@^0.2.1`, using its public `updateMessage` through standard npm installation.
+- Preserve original cards in unencrypted reply state to avoid losing content during updates, retaining at most 256 active cards with terminal/expiry cleanup. Card content is excluded from diagnostics and release packages.
+- Full offline regression on Windows x64 / Node 24.12.0: 429 tests, 428 passed, 0 failed, and 1 explicit native-credential test skipped. The 42 Feishu-specific tests include recipient-specific indicators, long messages, both languages, mapping-confirmed enablement, closed/switched/expired/paused/recovered sessions, failure backoff, revocation, bounded updates, and bridge updates to original messages.
+- Real Feishu dynamic-card updates have not been field-validated; 0.3.0 normal-reply acceptance does not validate the new dynamic status path.
+
 ## 0.3.0 — 2026-11-08
 
 Add two-way communication through Feishu self-built apps, using npm `latest` for the stable release. Preserve Telegram and default Webhook notification compatibility, with one remote reply channel per configuration. Actual publication status is authoritative on the npm registry.

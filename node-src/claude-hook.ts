@@ -1,7 +1,7 @@
 import type { Readable } from 'node:stream';
 import path from 'node:path';
-import { ConfigError, decodeUtf8, loadConfig, ready, type Env } from './config.js';
-import { deliver, makePlan, type Channel, type Message } from './channels.js';
+import { ConfigError, decodeUtf8, loadConfig, ready, type Config, type Env } from './config.js';
+import { deliver, makePlan, type Channel, type Message, type Plan } from './channels.js';
 import { claudeSettingsPath, NOTIFICATION_MATCHER } from './claude-code.js';
 import { t } from './i18n.js';
 import { shouldNotify, type NotifyEvent } from './notifications.js';
@@ -10,6 +10,8 @@ import { findSessionName } from './reply-platform.js';
 import { ReplyPreparationError, safeDeliveryReason, safeFailureReason, saveNotificationDiagnostic, type NotificationDiagnostic, type ReplyDiagnosticCode } from './notification-diagnostics.js';
 import { createDeliveryTracer, type DeliveryTrace, type DeliveryTracerOptions } from './delivery-trace.js';
 import { lifecycleHook, interactionHook, attachReply, mapReplies, notificationCoverage, type ReplyHookOptions } from './reply-hooks.js';
+import { replyCardFooter } from './feishu-card-status.js';
+import { TTL } from './reply-state.js';
 
 export const MAX_HOOK_BYTES = 8 * 1024 * 1024;
 export async function readHookInput(input: Readable = process.stdin, limit = MAX_HOOK_BYTES): Promise<Uint8Array> {
@@ -91,6 +93,29 @@ export interface HookContext {
   /** 测试注入重连等待；生产使用默认值。 */
   deliveryTrace?: DeliveryTracerOptions;
 }
+function feishuCompletionPlan(message: Message, config: Config,
+  binding: Awaited<ReturnType<typeof attachReply>>, reason: ReplyDiagnosticCode): Plan {
+  const users = binding?.access.policy.channel === 'feishu' ? binding.access.policy.users : [];
+  const items = (config.feishu.openIds ?? []).flatMap(recipient => {
+    const available = users.includes(recipient);
+    const detail = available ? t('feishu.replyPreparingDetail')
+      : binding ? t(users.length ? 'feishu.replyNotAuthorized' : 'feishu.replyOtherChannel')
+      : t(reason === 'disabled' ? 'feishu.replyDisabled'
+        : reason === 'bridge-unready' ? 'reply.skipBridge'
+        : reason === 'input-unobserved' ? 'reply.skipInput'
+        : reason === 'session-working' ? 'reply.skipWorking'
+        : reason === 'identity-changed' ? 'reply.skipChanged'
+        : reason === 'session-unverified' || reason === 'state-missing' ? 'reply.skipSession' : 'feishu.replyCheckFailed');
+    const status = t(available ? 'feishu.replyPreparing' : 'feishu.replyUnavailable');
+    // 每个接收人单独规划，让状态参与标题/正文预算；长消息的每段标题都保留状态。
+    const recipientConfig: Config = { ...config, feishu: { ...config.feishu, openIds: [recipient] } };
+    const plan = makePlan('feishu', { ...message, title: `${status}｜${message.title}`, level: available ? 'warn' : 'info',
+      footer: available ? replyCardFooter(detail, Date.now() + TTL, message.footer) : [detail, message.footer].filter(Boolean).join('\n') }, recipientConfig);
+    if (!available) for (const item of plan.items) item.payload.card.header.template = 'grey';
+    return plan.items;
+  });
+  return { channel: 'feishu', recipients: config.feishu.openIds?.length ?? 0, items };
+}
 export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, context: HookContext): Promise<void> {
   const message = claudeHookMessage(bytes);
   const data = JSON.parse(decodeUtf8(bytes));
@@ -150,15 +175,15 @@ export async function dispatchClaudeHook(bytes: Uint8Array, configFile: string, 
       let trace: DeliveryTrace | undefined;
       try {
         if (channel === 'feishu' && covered.feishu) continue;
-        const outgoing = channel === 'feishu' && binding?.access.policy.channel === 'feishu'
-          ? { ...notification, content: notification.content + '\n\n' + t('feishu.replyHint') } : notification;
-        const plan = makePlan(channel, outgoing, config);
+        const plan = channel === 'feishu' && config.feishu.mode === 'app' && data.hook_event_name === 'Stop'
+          ? feishuCompletionPlan(notification, config, binding, diagnostic.reply)
+          : makePlan(channel, notification, config);
         if (channel === 'telegram' && covered.telegram.length) {
           plan.items = plan.items.filter(item => !covered.telegram.includes(item.recipient));
           plan.recipients = new Set(plan.items.map(item => item.recipient)).size;
           if (!plan.items.length) continue;
         }
-        if (binding) mapReplies(plan, binding);
+        if (binding) mapReplies(plan, binding, channel === 'feishu' && config.feishu.mode === 'app' ? { footer: notification.footer } : undefined);
         const traced = channel === 'telegram' ? tracer.telegram(plan) : undefined;
         let result;
         try { result = await (traced ? context.send(plan, config, traced.request) : context.send(plan, config)); }

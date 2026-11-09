@@ -37,12 +37,12 @@ export function verifyPackage(packFile, packageDirectory, root = fileURLToPath(n
     { cwd: path.dirname(archive), encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true }));
   const source = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (metadata.name !== source.name || metadata.version !== source.version ||
-      metadata.dependencies?.['@quecue/notify-core'] !== '^0.2.0' ||
-      source.dependencies?.['@quecue/notify-core'] !== '^0.2.0' ||
+      metadata.dependencies?.['@quecue/notify-core'] !== '^0.2.1' ||
+      source.dependencies?.['@quecue/notify-core'] !== '^0.2.1' ||
       metadata.devDependencies?.['@quecue/notify-core'] || metadata.imports?.['#notify-core'] ||
       [metadata.bundledDependencies, metadata.bundleDependencies].some(value =>
         value === true || (Array.isArray(value) && value.includes('@quecue/notify-core')))) {
-    throw new Error('发布包必须声明兼容范围 ^0.2.0 的标准通讯运行时依赖，不能嵌入或使用旧别名。');
+    throw new Error('发布包必须声明兼容范围 ^0.2.1 的标准通讯运行时依赖，不能嵌入或使用旧别名。');
   }
   return { filename: pack.filename, integrity };
 }

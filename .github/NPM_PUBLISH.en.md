@@ -31,7 +31,7 @@ Supported OIDC publishing of a public package from a public GitHub repository ca
 
 1. Run `npm ci --ignore-scripts` and `npm test` in this repository. Review release notes and both language versions.
 2. Select an unpublished version and update package.json, package-lock, `VERSION` in `node-src/cli.ts`, and CHANGELOG together. `0.2.2` is already published; subsequent dependency-range changes require a new version rather than overwriting historical versions.
-3. Include source, runtime dependency ranges, the registry lockfile and build/release scripts in the versioned commit. The current communication dependency range is `^0.2.0`; the lockfile still pins the tested `0.2.0`. Library source: [QueCue/notify-core](https://github.com/QueCue/notify-core). First confirm `@quecue/notify-core@0.2.0` is available on npm, then generate and verify the lockfile. CI installs through npm without reading a sibling checkout or vendor tarball.
+3. Include source, runtime dependency ranges, the registry lockfile and build/release scripts in the versioned commit. The current communication dependency range is `^0.2.1`; the lockfile still pins the tested `0.2.1`. Library source: [QueCue/notify-core](https://github.com/QueCue/notify-core). First confirm `@quecue/notify-core@0.2.1` is available on npm, then generate and verify the lockfile. CI installs through npm without reading a sibling checkout or vendor tarball.
 4. Generate and verify the candidate locally:
 
    ```sh

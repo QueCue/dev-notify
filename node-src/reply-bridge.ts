@@ -12,6 +12,7 @@ import { acquireBotLock, processState } from './reply-lock.js';
 import { drainReplies, drainFeishuInbox, processUpdate } from './reply-engine.js';
 import { feishuClient, feishuReplyApi, enqueueFeishuMessage, type FeishuFactory } from './reply-feishu.js';
 import { drainInteractionFeedback } from './reply-outcomes.js';
+import { refreshFeishuReplyCards, type CardRefreshOptions } from './feishu-card-status.js';
 import { CONNECTION_RESET_RETRY_DELAYS, saveBridgeFailure, safeFailureReason, TelegramConnectionResetError, isBridgeDiagnosticStage, type BridgeDiagnosticStage } from './notification-diagnostics.js';
 /** 两种初始化查询合计的 reset 重试上限。 */
 export const INIT_RESET_RETRIES = 3;
@@ -156,6 +157,8 @@ export interface BridgeOptions {
   lang?: string;
   api?: (access: ReplyAccess) => TelegramApi;
   feishuFactory?: FeishuFactory;
+  cardInspect?: CardRefreshOptions['inspect'];
+  cardRefreshMs?: number;
   sleep?: (ms: number) => Promise<unknown>;
   stopped?: () => boolean;
   maxIterations?: number;
@@ -229,7 +232,9 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
         await client.start();
         lease.ready = client.state === 'connected'; lease.identity = access.identity; await saveLease();
         const api = options.api?.(access) ?? feishuReplyApi(access.config, client);
-        let iteration = 0;
+        const refreshMs = options.cardRefreshMs ?? 10000;
+        if (!Number.isSafeInteger(refreshMs) || refreshMs < 10) throw new ConfigError(t('reply.bridgeFailed'));
+        let iteration = 0, lastCardRefresh = 0;
         while (!await isStopped() && iteration++ < (options.maxIterations ?? Infinity)) {
           setLocale(resolveLocale(options.lang, env, await readConfigLanguage(file)));
           const current = await fresh();
@@ -243,6 +248,12 @@ async function runBridgeAttempt(file: string, options: BridgeOptions, attempt: B
           catch { log(t('reply.handleFailedLog')); }
           await drainReplies(access, context);
           await drainInteractionFeedback(access, api, fresh, log);
+          if (Date.now() - lastCardRefresh >= refreshMs && client.state === 'connected') {
+            lastCardRefresh = Date.now();
+            await refreshFeishuReplyCards(access, (id, content) => client.updateMessage(id, content), {
+              fresh, inspect: options.cardInspect, env, log,
+            }).catch(() => log(t('feishu.replyRefreshFailed')));
+          }
           await (options.sleep ?? delay)(250);
         }
         if (heartbeatFailed) throw new ConfigError(t('reply.bridgeFailed'));

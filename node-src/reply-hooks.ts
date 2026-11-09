@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigError, type Config, type Env } from './config.js';
-import { t } from './i18n.js';
-import { accessReplies, botKey, digest, stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, type ReplyAccess, type SessionTarget } from './reply-state.js';
+import { t, getLocale } from './i18n.js';
+import { MAX_REPLY_CARDS } from './feishu-card-status.js';
+import { accessReplies, botKey, digest, stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, TTL, type ReplyAccess, type SessionTarget } from './reply-state.js';
 import { lookupSession, SessionLookupError, type SessionLookup } from './reply-platform.js';
 import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
@@ -58,6 +59,7 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
   const receipt = await stateTransaction(access, state => {
     const previous = state.sessions[data.session_id];
     if (event === 'SessionEnd' || (confirmedGone && previous && before && targetEpoch(previous) === targetEpoch(before))) {
+      for (const card of Object.values(state.feishuCards ?? {})) if (card.session === data.session_id) card.invalidated = 'closed';
       delete state.sessions[data.session_id]; delete state.pending[data.session_id];
       endSessionInteractions(state, data.session_id, t('reply.endSessionReason'));
       return null;
@@ -76,6 +78,7 @@ export async function lifecycleHook(data: any, file: string, options: ReplyHookO
     // 同进程 / 同 TTY 已切换会话时，旧映射不再允许输入。
     for (const [id, other] of Object.entries(state.sessions)) {
       if (id !== target.session && (other.pid === target.pid || (target.tty && other.tty === target.tty))) {
+        for (const card of Object.values(state.feishuCards ?? {})) if (card.session === id) card.invalidated = 'switched';
         endSessionInteractions(state, id, t('reply.endSwitchedReason'));
         delete state.sessions[id]; delete state.pending[id];
       }
@@ -172,6 +175,9 @@ export async function attachReply(message: Message, data: any, file: string, opt
   if (replyChannel(access) === 'feishu') {
     const reason = await revalidate();
     if (reason) return skip(reason);
+    const full = await stateTransaction(access, state => Object.values(state.feishuCards ?? {})
+      .filter(card => !['expired', 'closed', 'switched'].includes(card.status)).length >= MAX_REPLY_CARDS);
+    if (full) return skip('check-failed');
     const token = randomBytes(16).toString('hex');
     const committed = await stateTransaction(access, state => {
       const latest = state.sessions[target.session];
@@ -222,14 +228,25 @@ export async function attachReply(message: Message, data: any, file: string, opt
   options.replyDiagnostic?.('attached');
   return { access, token };
 }
-export function mapReplies(plan: Plan, binding: { access: ReplyAccess; token: string }): void {
+export function mapReplies(plan: Plan, binding: { access: ReplyAccess; token: string }, feishuStatus?: { footer: string }): void {
   if (plan.channel !== replyChannel(binding.access)) return;
   plan.onSent = async (item, response) => {
     if (!binding.access.policy.users.includes(item.recipient)) return;
     if (!validMessageId(response.result?.message_id)) throw new ConfigError(t('reply.noMessageId'));
     await stateTransaction(binding.access, state => {
       const entry = state.entries['token:' + binding.token];
-      if (entry) state.entries[messageKey(binding.access, item.recipient, response.result.message_id)] = entry;
+      if (!entry) throw new ConfigError(t('reply.noMessageId'));
+      state.entries[messageKey(binding.access, item.recipient, response.result.message_id)] = entry;
+      if (feishuStatus && replyChannel(binding.access) === 'feishu' && typeof response.result.message_id === 'string') {
+        const cards = state.feishuCards ??= {};
+        for (const [id, old] of Object.entries(cards)) if (['expired', 'closed', 'switched'].includes(old.status)) delete cards[id];
+        if (Object.keys(cards).length >= MAX_REPLY_CARDS) throw new ConfigError(t('feishu.replyCheckFailed'));
+        const title = String(item.payload.card.header.title.content);
+        cards[response.result.message_id] = { message: response.result.message_id, user: item.recipient,
+          session: entry.session, epoch: entry.epoch, expires: entry.updated + TTL,
+          title: title.slice(title.indexOf('｜') + 1), footer: feishuStatus.footer,
+          card: structuredClone(item.payload.card), language: getLocale(), status: 'preparing' };
+      }
     });
   };
 }

@@ -48,6 +48,7 @@ export interface ReplyState {
   calls: Record<string, ToolCall>;
   feishuInbox?: Record<string, import('./reply-feishu.js').FeishuInboxMessage>;
   feishuSeen?: Record<string, number>;
+  feishuCards?: Record<string, import('./feishu-card-status.js').FeishuReplyCard>;
 }
 export interface ReplyAccess { policy: ReplyPolicy; config: Config; identity: string; file: string }
 export const policyPath = (config: string) => config + '.reply.json';
@@ -133,11 +134,19 @@ export async function stateTransaction<T>(access: ReplyAccess, work: (state: Rep
     if (state.version !== 1 || !Number.isSafeInteger(state.offset) || state.offset < 0
       || ![state.sessions, state.entries, state.pending, state.requests, state.calls].every(record)
       || state.feishuInbox !== undefined && !record(state.feishuInbox)
-      || state.feishuSeen !== undefined && !record(state.feishuSeen)) throw new ConfigError(t('reply.invalidState'));
+      || state.feishuSeen !== undefined && !record(state.feishuSeen)
+      || state.feishuCards !== undefined && !record(state.feishuCards)) throw new ConfigError(t('reply.invalidState'));
     const now = Date.now();
     for (const section of [state.sessions, state.entries, state.pending, state.requests, state.calls]) for (const [key, value] of Object.entries(section)) {
       if (!record(value) || typeof value.updated !== 'number' || !Number.isFinite(value.updated)
         || value.updated > now + 60000 || now - value.updated > TTL) delete section[key];
+    }
+    for (const [key, value] of Object.entries(state.feishuCards ?? {})) {
+      if (!record(value) || value.message !== key || typeof value.user !== 'string' || !record(value.card)
+        || typeof value.session !== 'string' || typeof value.epoch !== 'string' || typeof value.title !== 'string'
+        || typeof value.footer !== 'string' || !['zh', 'en'].includes(value.language)
+        || !['preparing', 'enabled', 'working', 'paused', 'expired', 'closed', 'switched'].includes(value.status)
+        || !Number.isFinite(value.expires) || now - value.expires > TTL) delete state.feishuCards![key];
     }
     for (const [key, value] of Object.entries(state.feishuInbox ?? {})) {
       if (!record(value) || value.id !== key || typeof value.user !== 'string' || typeof value.text !== 'string'
