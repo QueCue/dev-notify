@@ -9,6 +9,8 @@ import { t } from './i18n.js';
 import type { Prompts } from './prompts.js';
 
 export const HOOK_MARKER = 'dev-notify:claude-code:v1';
+// 同步 hook 未提供官方无限等待配置；24 天仍低于 32 位毫秒定时器上限，避免超大值溢出。
+export const PERMISSION_HOOK_TIMEOUT_SECONDS = 24 * 24 * 60 * 60;
 export const NOTIFICATION_MATCHER = 'permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input';
 export const EVENTS = ['Stop', 'Notification', 'SessionStart', 'UserPromptSubmit', 'SessionEnd', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'] as const;
 type Settings = Record<string, any>;
@@ -153,7 +155,7 @@ function merged(data: Settings, config: string | null, runtime: HookRuntime): Se
     if (config !== null) {
       const handler = { type: 'command', command: runtime.node,
         args: [runtime.cli, 'integration', 'claude-code', 'hook', '--config', config],
-        ...(event === 'Notification' ? { async: true } : { timeout: event === 'PermissionRequest' ? 720 : event === 'PreToolUse' ? 10 : 120 }), statusMessage: HOOK_MARKER };
+        ...(event === 'Notification' ? { async: true } : { timeout: event === 'PermissionRequest' ? PERMISSION_HOOK_TIMEOUT_SECONDS : event === 'PreToolUse' ? 10 : 120 }), statusMessage: HOOK_MARKER };
       const matcher = event === 'Notification' ? NOTIFICATION_MATCHER : null;
       groups.push(matcher ? { matcher, hooks: [handler] } : { hooks: [handler] });
     }

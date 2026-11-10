@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigError, type Config, type Env } from './config.js';
 import { t, getLocale } from './i18n.js';
 import { MAX_REPLY_CARDS } from './feishu-card-status.js';
-import { accessReplies, botKey, digest, stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, TTL, channelAccess, replyAccesses, chatChannel, type ReplyChannel, type ReplyAccess, type SessionTarget } from './reply-state.js';
+import { accessReplies, botKey, digest, stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, TTL, interactionExpired, channelAccess, replyAccesses, chatChannel, type ReplyChannel, type ReplyAccess, type SessionTarget } from './reply-state.js';
 import { lookupSession, SessionLookupError, type SessionLookup } from './reply-platform.js';
 import { processState } from './reply-lock.js';
 import { textHash } from './reply-engine.js';
@@ -133,7 +133,7 @@ export async function notificationCoverage(data: any, file: string, config: Conf
       || typeof data.tool_name === 'string' && data.tool_name !== call.tool
       || typeof data.prompt_id === 'string' && data.prompt_id !== call.prompt) return none;
     const request = call.request && state.requests[call.request];
-    if (!request || request.kind !== 'question' || request.session !== target.session || request.epoch !== call.epoch || request.expires <= Date.now()) return none;
+    if (!request || request.kind !== 'question' || request.session !== target.session || request.epoch !== call.epoch || interactionExpired(request)) return none;
     // Notification 通常没有调用 ID；仅覆盖当前最后一项调用，存在其他并行调用时保守保留提醒。
     if (Object.entries(state.calls).some(([key, other]) => key !== target.latestCall && other.session === target.session && other.epoch === call.epoch && !other.ended)) return none;
     return {

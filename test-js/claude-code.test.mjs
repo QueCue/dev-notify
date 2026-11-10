@@ -78,7 +78,8 @@ test('首次安装写入通知、同步生命周期与交互 exec hooks，参数
   assert.equal(saved.hooks.PreToolUse[0].matcher, undefined);
   assert.equal(saved.hooks.PreToolUse[0].hooks[0].timeout, 10);
   assert.equal(saved.hooks.PostToolUse[0].hooks[0].async, undefined);
-  assert.equal(saved.hooks.PermissionRequest[0].hooks[0].timeout, 720);
+  assert.equal(saved.hooks.PermissionRequest[0].hooks[0].timeout, 24 * 24 * 60 * 60);
+  assert.ok(saved.hooks.PermissionRequest[0].hooks[0].timeout * 1000 < 2 ** 31);
   for (const hook of hooks(saved)) {
     assert.equal(hook.command, process.execPath);
     assert.equal(hook.statusMessage, HOOK_MARKER);
@@ -87,6 +88,17 @@ test('首次安装写入通知、同步生命周期与交互 exec hooks，参数
   }
   assert.ok(prompts.output.some(text => text.includes('敏感内容')));
   assert.deepEqual(await readdir(ctx.directory), ['settings.json']);
+});
+test('重新安装升级旧PermissionRequest超时且不改变其他hook等待时间', async t => {
+  const ctx = await temp(t);
+  await configureClaudeCode(ctx.config, 'install', ui(['y']), { env: ctx.env, runtime });
+  const previous = JSON.parse(await readFile(ctx.file, 'utf8'));
+  previous.hooks.PermissionRequest[0].hooks[0].timeout = 720;
+  await save(ctx.file, previous);
+  await configureClaudeCode(ctx.config, 'install', ui(['y']), { env: ctx.env, runtime });
+  const updated = JSON.parse(await readFile(ctx.file, 'utf8'));
+  assert.equal(updated.hooks.PermissionRequest[0].hooks[0].timeout, 24 * 24 * 60 * 60);
+  for (const event of EVENTS.filter(event => event !== 'PermissionRequest')) assert.deepEqual(updated.hooks[event], previous.hooks[event]);
 });
 test('合并保留权限、环境变量、未知设置、原旧版 hooks 和其他事件', async t => {
   const ctx = await temp(t);

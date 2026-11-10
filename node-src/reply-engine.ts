@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
-import { digest, targetEpoch, stateTransaction, TTL, messageKey, validMessageId, replyChannel, authorizedChat, type ReplyAccess, type Entry, type SessionTarget } from './reply-state.js';
+import { digest, targetEpoch, stateTransaction, TTL, messageKey, validMessageId, replyChannel, authorizedChat, interactionExpired, type ReplyAccess, type Entry, type SessionTarget } from './reply-state.js';
 import { handleInteractionCallback, handleInteractionText, showInteraction } from './reply-interactions.js';
 import { injectReply, sanitizeReply, validateTarget, SessionLookupError } from './reply-platform.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
@@ -29,12 +29,12 @@ export async function resolveEntry(access: ReplyAccess, key: string, context: En
     if (!entry) return { reason: 'mapping-missing' as const };
     if (!target) return { reason: 'session-missing' as const };
     if (entry.epoch !== sessionEpoch(target)) return { reason: 'session-changed' as const };
-    if (Date.now() - entry.updated >= TTL) return { reason: 'mapping-expired' as const };
+    if (!entry.request && Date.now() - entry.updated >= TTL) return { reason: 'mapping-expired' as const };
     if (!target.tracked && !entry.request) return { reason: 'input-unobserved' as const };
     const request = entry.request && state.requests[entry.request];
     // 只有仍在等待的原始结构化请求可以请求重新核验；普通终端输入维持原来的暂停规则。
     const recoverable = !!request && request.session === entry.session && request.epoch === entry.epoch
-      && !request.result && !request.response && !request.claimed && request.expires > Date.now()
+      && !request.result && !request.response && !request.claimed && !interactionExpired(request)
       && (!request.call || state.calls[request.call]?.request === request.id && !state.calls[request.call]?.ended);
     if (target.unverified && !recoverable) return { reason: entry.request ? 'interaction-ended' as const : 'verification-paused' as const };
     return { entry, target };
@@ -57,7 +57,7 @@ export async function resolveEntry(access: ReplyAccess, key: string, context: En
     const request = entry?.request && state.requests[entry.request];
     if (!entry || !target || entry.request !== resolved.entry.request || entry.epoch !== resolved.entry.epoch
       || sessionEpoch(target) !== resolved.entry.epoch) return fail('session-changed');
-    if (!request || request.result || request.response || request.claimed || request.expires <= Date.now()
+    if (!request || request.result || request.response || request.claimed || interactionExpired(request)
       || request.call && (state.calls[request.call]?.request !== request.id || state.calls[request.call]?.ended)) return fail('interaction-ended');
     // 查询期间其他 hook 又更新了会话时，不覆盖较新的核验决定。
     if (target.updated !== resolved.target.updated) return fail('verification-paused');

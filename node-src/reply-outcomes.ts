@@ -1,4 +1,4 @@
-import { digest, stateTransaction, targetEpoch, authorizedChat, replyAccesses, replyChannel, type Interaction, type InteractionResult, type ReplyAccess, type ReplyState, type SessionTarget } from './reply-state.js';
+import { digest, stateTransaction, targetEpoch, authorizedChat, replyAccesses, replyChannel, interactionExpired, INTERACTION_RESULT_MS, type Interaction, type InteractionResult, type ReplyAccess, type ReplyState, type SessionTarget } from './reply-state.js';
 import { t } from './i18n.js';
 import { ConfigError } from './config.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
@@ -15,6 +15,8 @@ export const callKey = (session: string, id: string) => digest(JSON.stringify([s
 export function finishInteraction(value: Interaction, result: InteractionResult): void {
   if (value.result) return;
   value.result = result;
+  value.updated = Date.now();
+  value.expires ??= value.updated + INTERACTION_RESULT_MS;
   for (const receipt of value.receipts ?? []) receipt.result ??= result;
   // 留下短期结果和消息 ID，用于反馈及旧按钮；不保留已结束的问题、参数和答案正文。
   value.input = {}; value.questions = []; value.answers = {}; value.selected = [];
@@ -108,7 +110,7 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
   const current = await fresh();
   if (!current || current.identity !== access.identity) return;
   if (access.grants) {
-    const active = await stateTransaction(access, state => Object.values(state.requests).filter(value => !value.result && !value.response && !value.claimed && value.expires > Date.now()
+    const active = await stateTransaction(access, state => Object.values(state.requests).filter(value => !value.result && !value.response && !value.claimed && !interactionExpired(value)
       && state.sessions[value.session]?.unverified !== true && state.sessions[value.session] && targetEpoch(state.sessions[value.session]) === value.epoch));
     for (const value of active) for (const view of replyAccesses(access)) {
       if (value.kind === 'permission' && view.policy.permissions !== true) continue;
@@ -125,7 +127,7 @@ export async function drainInteractionFeedback(access: ReplyAccess, api: Telegra
       if (value.result) continue;
       const target = state.sessions[value.session];
       const ended = !target || targetEpoch(target) !== value.epoch;
-      if (!ended && value.expires > Date.now()) continue;
+      if (!ended && !interactionExpired(value)) continue;
       finishInteraction(value, {
         kind: value.claimed ? 'unknown' : 'not-applied',
         reason: ended ? 'session' : 'expired',

@@ -14,6 +14,7 @@ import { dispatchClaudeHook } from '../dist/claude-hook.js';
 import { createInteraction, showInteraction, waitInteraction, questionsFrom, interactionContent } from '../dist/reply-interactions.js';
 import { processIdentity, findSession, lookupSession, SessionLookupError, findSessionName, validateTarget, sanitizeReply, injectReply, runCommand } from '../dist/reply-platform.js';
 import { telegramApi } from '../dist/reply-telegram.js';
+import { processState } from '../dist/reply-lock.js';
 import { runBridge, bridgeStatus, stopBridge } from '../dist/reply-bridge.js';
 import { makePlan, deliver, TransportError } from '../dist/channels.js';
 import { TelegramConnectionResetError, TelegramRequestError } from '../dist/notification-diagnostics.js';
@@ -1045,6 +1046,75 @@ test('自定义权限反馈仅拒绝说明，不变相批准；未授权权限�
   const response = await waitInteraction(ctx.access, request, ctx.context.fresh, { timeout: 100 });
   assert.deepEqual(response.hookSpecificOutput.decision, { behavior: 'deny', message: '先检查文件' });
   await assert.rejects(createInteraction({ ...ctx.access, policy: { ...ctx.access.policy, permissions: false } }, TARGET, 'permission', {}), /未授权/);
+});
+for (const kind of ['question', 'permission']) test(`等待${kind}不因十分钟或超过24小时而失效，提交后仍限制结果确认时间`, async t => {
+  const ctx = await temp(t);
+  const data = { tool_use_id: 'long-wait', tool_name: kind === 'question' ? 'AskUserQuestion' : 'Bash',
+    tool_input: kind === 'question' ? { questions: [QUESTION] } : { command: 'pwd' } };
+  await registerToolCall(ctx.access, TARGET, data);
+  const key = callKey(TARGET.session, data.tool_use_id);
+  const request = await createInteraction(ctx.access, TARGET, kind,
+    kind === 'question' ? data.tool_input : { tool_name: data.tool_name, tool_input: data.tool_input }, key);
+  await showInteraction(ctx.access, request.id, '111', ctx.api);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  let polls = 0;
+  const response = await waitInteraction(ctx.access, request, ctx.context.fresh, { sleep: async () => {
+    assert.ok(++polls <= 2, '默认等待不应超时，也不应漏掉已登记的决定');
+    t.mock.timers.tick(polls === 1 ? 11 * 60 * 1000 : 2 * TTL);
+    await flushFeedback(ctx);
+    const state = await snapshot(ctx.access);
+    assert.equal(state.requests[request.id].expires, null);
+    assert.equal(state.requests[request.id].result, undefined);
+    assert.ok(state.calls[key]); assert.ok(state.sessions[TARGET.session]);
+    if (polls === 2) {
+      assert.equal(state.entries['tg:111:100'], undefined, '普通回复仍受24小时TTL约束');
+      await processUpdate(ctx.access, callback(1, request.id, 0, kind === 'question' ? 'o1' : 'a'), ctx.context);
+    }
+  } });
+  assert.equal(polls, 2); assert.equal(response.hookSpecificOutput.decision.behavior, 'allow');
+  if (kind === 'question') assert.deepEqual(response.hookSpecificOutput.decision.updatedInput.answers, { [QUESTION.question]: 'Vue' });
+  let state = await snapshot(ctx.access);
+  assert.equal(state.requests[request.id].claimed, true);
+  assert.equal(state.requests[request.id].expires, Date.now() + 10 * 60 * 1000);
+  t.mock.timers.tick(9 * 60 * 1000); await flushFeedback(ctx);
+  assert.equal((await snapshot(ctx.access)).requests[request.id].result, undefined);
+  t.mock.timers.tick(2 * 60 * 1000); await flushFeedback(ctx);
+  state = await snapshot(ctx.access);
+  assert.equal(state.requests[request.id].result.kind, 'unknown');
+  assert.equal(state.requests[request.id].response, undefined);
+  assert.equal(ctx.inputs.length, 0);
+});
+test('不限时交互的等待进程已死亡时停止收答，旧版有限期限仍照常过期', async t => {
+  const ctx = await temp(t);
+  const dead = [2_147_483_647, 2_147_483_646, 2_147_483_645].find(pid => processState(pid) === 'dead');
+  assert.ok(dead, '夹具必须明确确认等待进程不存在');
+  for (const scenario of ['dead', 'legacy', 'invalid']) {
+    const request = await createInteraction(ctx.access, TARGET, 'question', { questions: [QUESTION] });
+    await stateTransaction(ctx.access, state => {
+      const value = state.requests[request.id];
+      if (scenario === 'dead') value.waiter = dead;
+      else {
+        delete value.waiter;
+        if (scenario === 'legacy') value.expires = Date.now() - 1;
+      }
+    });
+    await processUpdate(ctx.access, callback(scenario === 'dead' ? 1 : scenario === 'legacy' ? 2 : 3, request.id, 0, 'o0'), ctx.context);
+    const value = (await snapshot(ctx.access)).requests[request.id];
+    assert.equal(value?.response, undefined);
+    if (scenario === 'invalid') assert.equal(value, undefined, '缺少等待者的null期限不能当作有效不限时请求');
+  }
+});
+test('不限时等待仍响应取消，不能在关闭后提交迟到答案', async t => {
+  const ctx = await temp(t), { request } = await boundQuestion(ctx), controller = new AbortController();
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  assert.equal(await waitInteraction(ctx.access, request, ctx.context.fresh, { signal: controller.signal, sleep: async () => {
+    t.mock.timers.tick(2 * TTL); controller.abort();
+  } }), null);
+  const state = await snapshot(ctx.access);
+  assert.equal(state.requests[request.id].result.kind, 'not-applied');
+  assert.equal(state.requests[request.id].result.reason, 'failed');
+  await processUpdate(ctx.access, callback(1, request.id, 0, 'o0'), ctx.context);
+  assert.equal((await snapshot(ctx.access)).requests[request.id].response, undefined);
 });
 test('交互超时、撤销或会话切换不默认选择，坏问题不猜选项', async t => {
   const ctx = await temp(t), request = await createInteraction(ctx.access, TARGET, 'question', { questions: [QUESTION] });

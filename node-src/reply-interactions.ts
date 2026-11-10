@@ -2,11 +2,10 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigError } from './config.js';
 import { t } from './i18n.js';
-import { stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, type Entry, type Interaction, type Question, type ReplyAccess, type SessionTarget } from './reply-state.js';
+import { stateTransaction, targetEpoch, replyChannel, messageKey, validMessageId, interactionExpired, INTERACTION_RESULT_MS, type Entry, type Interaction, type Question, type ReplyAccess, type SessionTarget } from './reply-state.js';
 import { replyHint, type TelegramApi } from './reply-telegram.js';
 import { finishInteraction } from './reply-outcomes.js';
 
-export const INTERACTION_MS = 10 * 60 * 1000;
 export function questionsFrom(input: Record<string, any>): Question[] {
   if (!Array.isArray(input.questions) || input.questions.length < 1 || input.questions.length > 4) throw new ConfigError(t('reply.invalidQuestions'));
   const questions = input.questions as Question[];
@@ -26,7 +25,7 @@ export async function createInteraction(access: ReplyAccess, target: SessionTarg
   if (kind === 'permission' && access.policy.permissions !== true) throw new ConfigError(t('reply.permissionsNotAuthorized'));
   const questions = kind === 'question' ? questionsFrom(input) : [];
   const value: Interaction = { id: randomBytes(16).toString('hex'), session: target.session, epoch: targetEpoch(target),
-    updated: Date.now(), expires: Date.now() + INTERACTION_MS, kind, input: structuredClone(input), questions,
+    updated: Date.now(), expires: null, waiter: process.pid, kind, input: structuredClone(input), questions,
     answers: {}, selected: [], index: 0, call, receipts: [], messages: [] };
   await stateTransaction(access, state => {
     const current = state.sessions[target.session];
@@ -46,7 +45,7 @@ export async function createInteraction(access: ReplyAccess, target: SessionTarg
   return value;
 }
 function active(value: Interaction | undefined): value is Interaction {
-  return !!value && !value.result && !value.response && !value.claimed && value.expires > Date.now();
+  return !!value && !value.result && !value.response && !value.claimed && !interactionExpired(value);
 }
 export function interactionMarkup(value: Interaction): Record<string, any> {
   const prefix = `dn:q:${value.id}:${value.index}:`;
@@ -253,17 +252,18 @@ export async function handleInteractionText(access: ReplyAccess, id: string, cha
 }
 export async function waitInteraction(access: ReplyAccess, value: Interaction, fresh: () => Promise<ReplyAccess | null>,
   options: { sleep?: (ms: number) => Promise<unknown>; timeout?: number; signal?: AbortSignal } = {}): Promise<Record<string, any> | null> {
-  const end = Math.min(value.expires, Date.now() + (options.timeout ?? INTERACTION_MS));
+  const end = Math.min(value.expires ?? Infinity, options.timeout === undefined ? Infinity : Date.now() + options.timeout);
   while (Date.now() < end && !options.signal?.aborted) {
     const current = await fresh();
     if (!current || current.identity !== access.identity || (value.kind === 'permission' && current.policy.permissions !== true)) return null;
     const response = await stateTransaction(access, state => {
       const request = state.requests[value.id], target = state.sessions[value.session];
-      if (!request || request.result || !target || targetEpoch(target) !== value.epoch || (request.call && (!state.calls[request.call] || state.calls[request.call].ended))) return { ended: true };
+      if (!request || request.result || interactionExpired(request) || !target || targetEpoch(target) !== value.epoch || (request.call && (!state.calls[request.call] || state.calls[request.call].ended))) return { ended: true };
       if (target.unverified === true || !request.response || request.claimed || options.signal?.aborted) return null;
       request.claimed = true;
       // 回传后等待独立的完成事件确认；不能在这里删除请求或报告成功。
-      request.expires = Date.now() + INTERACTION_MS;
+      request.updated = Date.now();
+      request.expires = request.updated + INTERACTION_RESULT_MS;
       return { response: request.response };
     });
     if (response?.ended) return null;

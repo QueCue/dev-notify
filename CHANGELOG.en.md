@@ -6,6 +6,13 @@ English | [简体中文](CHANGELOG.md)
 
 No changes yet.
 
+## 0.4.3 — 2026-11-10
+
+- Remove the application's 10-minute answer deadline for remote questions and per-call permission decisions. Preserve the original session, call, and question-message mappings while waiting instead of pruning them through the ordinary reply's 24-hour TTL. Ordinary reply TTL, queue deadlines, and the 10-minute result-confirmation deadline after handoff remain unchanged.
+- Extend the PermissionRequest hook timeout from 720 seconds to 24 days, below the 32-bit millisecond timer limit. Claude Code does not document an infinite synchronous timeout, so truly infinite waiting is not promised. Reinstall hooks and restart the Claude session and bridge after adopting the change; only new interactions use it, and expired questions are not revived.
+- Record the waiting hook PID and stop accepting answers after its exit is confirmed. Cancellation, local handling, session switching, revocation, identity checks, and replay protection remain in place. Pending content may remain on disk longer while awaiting a decision; ended requests still clear their text.
+- Full offline regression on Windows / Node 24.12.0: 507 tests, 506 passed, zero failures, one explicit native credential test skipped. Mock-clock coverage includes Telegram/Feishu answers after ten minutes and multiple days, unchanged ordinary reply TTL, result-confirmation deadlines, waiter death, and cancellation; old hook timeout migration is also checked. Strict build, package dry run, and diff whitespace checks passed. Real-platform multi-day waiting has not been acceptance-tested.
+
 ## 0.4.2 — 2026-11-09
 
 - Fix structured questions remaining paused after a single failed session lookup in a post-question Notification. Quoting the original question revalidates session/PID/birth identifier/TTY only for a still-active, unsubmitted request. Persistent failures, newer pause decisions, identity changes, revocation, or ended requests remain blocked; ordinary terminal input is not unpaused by this path.

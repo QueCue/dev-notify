@@ -647,6 +647,25 @@ test('飞书问题按引用逐题回答，支持多选编号和自定义答案�
   await receive(ctx, event('om_custom_answer', '自定义', parent));
   assert.equal((await snapshot(ctx.access)).requests[custom.id].answers[QUESTION.question], '自定义');
 });
+test('飞书隔天仍可引用原题和多选题作答，不延长普通会话通知的TTL', async t => {
+  const ctx = await fixture(t), request = await boundFeishuQuestion(ctx,
+    [QUESTION, { ...QUESTION, question: '其他框架？', multiSelect: true }]);
+  await showInteraction(ctx.access, request.id, USER, ctx.api);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  t.mock.timers.tick(2 * 24 * 60 * 60 * 1000);
+  await receive(ctx, event('om_late_single', '2', 'om_sent_1'));
+  let state = await snapshot(ctx.access);
+  assert.equal(state.requests[request.id].answers[QUESTION.question], 'Vue');
+  assert.equal(state.entries[messageKey(ctx.access, USER, 'om_notice')], undefined);
+  const second = state.requests[request.id].messages.at(-1).message;
+  t.mock.timers.tick(2 * 24 * 60 * 60 * 1000);
+  await receive(ctx, event('om_late_old_question', '1', 'om_sent_1'));
+  assert.equal((await snapshot(ctx.access)).requests[request.id].index, 1);
+  await receive(ctx, event('om_late_multi', '1,2', second));
+  const response = await waitInteraction(ctx.access, request, ctx.context.fresh, { timeout: 100 });
+  assert.deepEqual(response.hookSpecificOutput.decision.updatedInput.answers, { [QUESTION.question]: 'Vue', '其他框架？': 'React,Vue' });
+  assert.equal(ctx.inputs.length, 0);
+});
 test('飞书权限只能显式一次授权，其他文字拒绝，/close 不执行决定', async t => {
   for (const [text, behavior] of [['/allow', 'allow'], ['/deny', 'deny'], ['请一直允许', 'deny'], ['/close', null]]) {
     const ctx = await fixture(t), request = await createInteraction(ctx.access, TARGET, 'permission', { tool_name: 'Bash', tool_input: { command: 'pwd' } });

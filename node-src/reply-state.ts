@@ -6,8 +6,12 @@ import { ConfigError, decodeUtf8, loadConfig, ready, type Config, type Env } fro
 import { joinList, t } from './i18n.js';
 import type { Prompts } from './prompts.js';
 import { replyHooksReady } from './claude-code.js';
+import { processState } from './reply-lock.js';
 
 export const TTL = 24 * 60 * 60 * 1000;
+export const INTERACTION_RESULT_MS = 10 * 60 * 1000;
+// null 表示等待用户决定时不设期限；提交后的结果确认仍使用有限期限。
+export const interactionExpired = (value: Interaction, now = Date.now()) => value.expires !== null && value.expires <= now;
 export const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 export type ReplyChannel = 'telegram' | 'feishu';
 export const replyChannel = (access: ReplyAccess): ReplyChannel => access.policy.channel ?? 'telegram';
@@ -34,10 +38,10 @@ export interface ToolCall {
   prompt?: string; updated: number; ended?: boolean; request?: string;
 }
 export interface Interaction {
-  id: string; session: string; epoch: string; updated: number; expires: number;
+  id: string; session: string; epoch: string; updated: number; expires: number | null;
   kind: 'question' | 'permission'; input: Record<string, any>; questions: Question[];
   answers: Record<string, string>; selected: number[]; index: number;
-  response?: Record<string, any>; claimed?: boolean;
+  response?: Record<string, any>; claimed?: boolean; waiter?: number;
   call?: string; result?: InteractionResult; receipts?: InteractionReceipt[];
   messages?: { chat: string; message: MessageId; cleared?: boolean; registered?: boolean }[];
   displayed?: Record<string, number>;
@@ -172,9 +176,24 @@ export async function stateTransaction<T>(access: ReplyAccess, work: (state: Rep
       || state.feishuSeen !== undefined && !record(state.feishuSeen)
       || state.feishuCards !== undefined && !record(state.feishuCards)) throw new ConfigError(t('reply.invalidState'));
     const now = Date.now();
+    for (const [key, value] of Object.entries(state.requests)) {
+      if (!record(value) || value.id !== key || !['question', 'permission'].includes(value.kind) || !record(value.input)
+        || !Array.isArray(value.questions) || !record(value.answers) || !Array.isArray(value.selected)
+        || !(value.expires === null && Number.isSafeInteger(value.waiter) && value.waiter! > 0
+          || Number.isFinite(value.expires))) { delete state.requests[key]; continue; }
+      // hook 被强杀后没有接收决定的进程；损坏的已回传记录也不能无限等待。存活未知不当作死亡。
+      if (value.expires === null && (value.claimed || processState(value.waiter!) === 'dead')) value.expires = now;
+    }
+    // 未结束的不限时交互及其会话、调用和消息映射不能被普通回复的 24 小时 TTL 清走。
+    const waiting = new Set(Object.values(state.requests).filter(value => !value.result && !interactionExpired(value, now)
+      && state.sessions[value.session] && targetEpoch(state.sessions[value.session]) === value.epoch
+      && (!value.call || state.calls[value.call]?.request === value.id && !state.calls[value.call]?.ended)).map(value => value.id));
+    const sessions = new Set([...waiting].map(id => state.requests[id].session));
     for (const section of [state.sessions, state.entries, state.pending, state.requests, state.calls]) for (const [key, value] of Object.entries(section)) {
+      const retained = record(value) && (section === state.requests ? waiting.has(key) : section === state.sessions ? sessions.has(key)
+        : section !== state.pending && 'request' in value && waiting.has(value.request as string));
       if (!record(value) || typeof value.updated !== 'number' || !Number.isFinite(value.updated)
-        || value.updated > now + 60000 || now - value.updated > TTL) delete section[key];
+        || value.updated > now + 60000 || !retained && now - value.updated > TTL) delete section[key];
     }
     for (const [key, value] of Object.entries(state.feishuCards ?? {})) {
       if (!record(value) || value.message !== key || typeof value.user !== 'string' || !record(value.card)
@@ -198,11 +217,6 @@ export async function stateTransaction<T>(access: ReplyAccess, work: (state: Rep
     for (const [key, value] of Object.entries(state.pending)) {
       if (typeof value.epoch !== 'string' || !(chatChannel(value.chat) === 'feishu' ? /^ou_[A-Za-z0-9_-]+$/ : /^[1-9][0-9]*$/).test(value.chat) || typeof value.id !== 'string'
         || !['queued', 'submitted', 'unknown'].includes(value.phase)) delete state.pending[key];
-    }
-    for (const [key, value] of Object.entries(state.requests)) {
-      if (value.id !== key || !['question', 'permission'].includes(value.kind) || !record(value.input)
-        || !Array.isArray(value.questions) || !record(value.answers) || !Array.isArray(value.selected)
-        || !Number.isFinite(value.expires)) delete state.requests[key];
     }
     const result = await work(state);
     // 长连接空闲检查不反复重写状态；清理、入队和所有业务变更仍在同一锁内原子提交。
